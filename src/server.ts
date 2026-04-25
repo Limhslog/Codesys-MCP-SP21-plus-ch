@@ -34,10 +34,12 @@ import { serverLog, setLogLevel } from './logger';
  * `(* === IMPLEMENTATION === *)`) and impl block (after) to distinguish
  * decl-changed minor (signature add/change) from impl-only revision.
  */
-function classifyMcpMirrorChanges(projectDir: string): {
-  level: 'major' | 'minor' | 'revision' | 'build';
-  evidence: string[];
-} {
+type ClassifyResult =
+  | { kind: 'bump'; level: 'major' | 'minor' | 'revision' | 'build'; evidence: string[] }
+  | { kind: 'no-changes'; evidence: string[] }
+  | { kind: 'first-run'; evidence: string[] };
+
+function classifyMcpMirrorChanges(projectDir: string): ClassifyResult {
   const evidence: string[] = [];
 
   const isGit = (() => {
@@ -53,8 +55,8 @@ function classifyMcpMirrorChanges(projectDir: string): {
     }
   })();
   if (!isGit) {
-    evidence.push(`'${projectDir}' is not a git repo -- can't classify, defaulting to 'build'`);
-    return { level: 'build', evidence };
+    evidence.push(`'${projectDir}' is not a git repo -- can't classify, treating as first-run`);
+    return { kind: 'first-run', evidence };
   }
 
   let baseRef = '';
@@ -64,10 +66,8 @@ function classifyMcpMirrorChanges(projectDir: string): {
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
     ).trim();
   } catch {
-    evidence.push(
-      'no v* tag found -- first-run, defaulting to build (Python seed-at-1.0.0.0 will fire if Project Information.Version is unset)'
-    );
-    return { level: 'build', evidence };
+    evidence.push('no v* tag found -- first-run');
+    return { kind: 'first-run', evidence };
   }
   evidence.push(`baseline: tag ${baseRef}`);
 
@@ -78,12 +78,12 @@ function classifyMcpMirrorChanges(projectDir: string): {
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
     );
   } catch {
-    evidence.push(`git diff against ${baseRef} failed -- defaulting to build`);
-    return { level: 'build', evidence };
+    evidence.push(`git diff against ${baseRef} failed -- treating as no-changes`);
+    return { kind: 'no-changes', evidence };
   }
   if (!raw.trim()) {
     evidence.push('no changes in mcp-mirror/ since baseline');
-    return { level: 'build', evidence };
+    return { kind: 'no-changes', evidence };
   }
 
   let hasDelete = false;
@@ -109,10 +109,10 @@ function classifyMcpMirrorChanges(projectDir: string): {
     }
   }
 
-  if (hasDelete || hasRename) return { level: 'major', evidence };
-  if (hasAdd) return { level: 'minor', evidence };
-  if (hasModify) return { level: 'revision', evidence };
-  return { level: 'build', evidence };
+  if (hasDelete || hasRename) return { kind: 'bump', level: 'major', evidence };
+  if (hasAdd) return { kind: 'bump', level: 'minor', evidence };
+  if (hasModify) return { kind: 'bump', level: 'revision', evidence };
+  return { kind: 'no-changes', evidence };
 }
 
 /**
@@ -1494,29 +1494,62 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     },
     async (args: { projectFilePath: string; level: 'major' | 'minor' | 'revision' | 'build' | 'auto' }) => {
       const escaped = resolvePath(args.projectFilePath, workspaceDir);
-      let resolvedLevel: 'major' | 'minor' | 'revision' | 'build' = args.level === 'auto' ? 'build' : args.level;
-      let classification: string[] = [];
 
       if (args.level === 'auto') {
         const projectDir = path.dirname(escaped);
         const r = classifyMcpMirrorChanges(projectDir);
-        resolvedLevel = r.level;
-        classification = r.evidence;
+
+        // Short-circuit: nothing to bump.
+        if (r.kind === 'no-changes') {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text:
+                  `bump_project_version (auto): no version change.\n\n` +
+                  r.evidence.map((e) => `  - ${e}`).join('\n'),
+              },
+            ],
+            isError: false,
+          };
+        }
+
+        // First-run resolves to 'build' on the Python side, where seed-at-1.0.0.0
+        // kicks in if Project Information.Version is None / empty / 0.0.0.0.
+        const resolvedLevel: 'major' | 'minor' | 'revision' | 'build' =
+          r.kind === 'first-run' ? 'build' : r.level;
+
+        const script = scriptManager.prepareScriptWithHelpers(
+          'bump_project_version',
+          {
+            PROJECT_FILE_PATH: escaped,
+            LEVEL: resolvedLevel,
+          },
+          ['ensure_project_open']
+        );
+        const result = await executor.executeScript(script);
+        const tag = r.kind === 'first-run' ? 'first-run -> seed' : `auto -> ${resolvedLevel}`;
+        return formatToolResponse(
+          result,
+          `bump_project_version (${tag}) complete for ${args.projectFilePath}.\n\nClassification:\n${r.evidence
+            .map((e) => `  - ${e}`)
+            .join('\n')}`
+        );
       }
 
       const script = scriptManager.prepareScriptWithHelpers(
         'bump_project_version',
         {
           PROJECT_FILE_PATH: escaped,
-          LEVEL: resolvedLevel,
+          LEVEL: args.level,
         },
         ['ensure_project_open']
       );
       const result = await executor.executeScript(script);
-      const headline = args.level === 'auto'
-        ? `bump_project_version (auto -> ${resolvedLevel}) complete for ${args.projectFilePath}.\nClassification:\n${classification.map((e) => `  - ${e}`).join('\n')}`
-        : `bump_project_version (${resolvedLevel}) complete for ${args.projectFilePath}.`;
-      return formatToolResponse(result, headline);
+      return formatToolResponse(
+        result,
+        `bump_project_version (${args.level}) complete for ${args.projectFilePath}.`
+      );
     }
   );
 
