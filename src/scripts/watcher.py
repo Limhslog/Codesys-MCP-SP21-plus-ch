@@ -25,7 +25,7 @@ IPC_BASE_DIR = r"{IPC_BASE_DIR}"
 COMMANDS_DIR = os.path.join(IPC_BASE_DIR, "commands")
 RESULTS_DIR = os.path.join(IPC_BASE_DIR, "results")
 POLL_INTERVAL = 50  # milliseconds
-WATCHER_VERSION = "0.4.1"
+WATCHER_VERSION = "0.4.2"
 
 # --- Error capture file (written before anything else can fail) ---
 _ERROR_FILE = os.path.join(IPC_BASE_DIR, "watcher_error.txt")
@@ -222,13 +222,13 @@ try:
 
         CODESYS injects KeyboardInterrupt into the script when the user
         clicks "Click here to CANCEL this operation" in the IDE. The
-        watcher should keep running across that — only an explicit
+        watcher should keep running across that -- only an explicit
         terminate.signal or process kill should stop it.
         """
         try:
             se.system.delay(ms)
         except KeyboardInterrupt:
-            _log("KeyboardInterrupt during system.delay() — ignored, watcher continues")
+            _log("KeyboardInterrupt during system.delay() - ignored, watcher continues")
 
     while True:
         try:
@@ -244,7 +244,7 @@ try:
             if cmd_files:
                 process_command(cmd_files[0])
         except KeyboardInterrupt:
-            _log("KeyboardInterrupt during loop iteration — ignored, watcher continues")
+            _log("KeyboardInterrupt during loop iteration - ignored, watcher continues")
         except Exception as e:
             _log("Loop error: %s\n%s" % (e, traceback.format_exc()))
 
@@ -257,7 +257,7 @@ except KeyboardInterrupt:
     # Last-resort: a Cancel that fires before the loop is even reached
     # (e.g. during scriptengine import or directory setup) should still
     # exit quietly without the CODESYS exception dialog.
-    _write_error("KeyboardInterrupt outside main loop — exiting quietly")
+    _write_error("KeyboardInterrupt outside main loop - exiting quietly")
     print("[WATCHER] Cancelled by user before main loop; exiting.")
 except Exception as _fatal:
     _write_error("FATAL: %s\n%s" % (_fatal, traceback.format_exc()))
