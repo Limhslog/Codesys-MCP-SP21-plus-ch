@@ -261,8 +261,16 @@ function classifyMcpMirrorChanges(projectDir: string): ClassifyResult {
 
   let raw = '';
   try {
+    // --ignore-cr-at-eol: ignore CRLF<->LF normalisation noise. CODESYS
+    // lives on Windows, the share lives on Linux/Samba, and git
+    // autocrlf settings can flip line endings on every checkout. Without
+    // this flag the classifier reported every .st file as M after a fresh
+    // checkout even though the content was identical, triggering a
+    // phantom release on X33 (commit 6c23e38, reverted in 3e6f12f).
+    // -w: also ignore whitespace-only changes (defensive; phantom releases
+    // shouldn't fire on a stray blank line either).
     raw = execSync(
-      `git -C "${projectDir}" diff --name-status -M50% ${baseRef} -- mcp-mirror/`,
+      `git -C "${projectDir}" diff --name-status --ignore-cr-at-eol -w -M50% ${baseRef} -- mcp-mirror/`,
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
     );
   } catch {
