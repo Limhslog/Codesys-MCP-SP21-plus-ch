@@ -1,3 +1,16 @@
+> ## About this fork
+>
+> This is a fork of [luke-harriman/Codesys-MCP](https://github.com/luke-harriman/Codesys-MCP) maintained at [phobicdotno/Codesys-MCP](https://github.com/phobicdotno/Codesys-MCP) on branch `sp21-plus-migration-notes`.
+>
+> **Why fork.** Upstream's watcher relies on `system.execute_on_primary_thread()` to marshal work from a background thread back to the CODESYS UI thread. That API was **removed in CODESYS V3.5 SP21+**, so on SP21 / SP22 every tool call returned the same `Marshal error: The functionality 'system.execute_on_primary_thread(...)' is no longer supported` and the server was effectively unusable on current CODESYS releases.
+>
+> **What's fixed in this fork:**
+>
+> - **SP21+/SP22 compatibility** — the watcher was rewritten as single-threaded on the primary thread, yielding to the IDE via `system.delay()`. No background thread, no marshaling. Works on SP19, SP21, and SP22+. Full rationale in [`docs/MIGRATION-SP21-PLUS.md`](docs/MIGRATION-SP21-PLUS.md).
+> - **Cancel-link hardening** — the watcher now catches `KeyboardInterrupt` (which is not a subclass of `Exception` in Python) at three layers, so clicking *"Click here to CANCEL this operation"* in CODESYS no longer pops the modal traceback dialog or kills the watcher. Bumped to `WATCHER_VERSION 0.4.2`.
+>
+> **Verified state of every tool** is recorded in [`docs/SMOKE-TEST-2026-04-25.md`](docs/SMOKE-TEST-2026-04-25.md): 17 of 28 invocations pass, 8 fail, 3 are partial. The failures are *upstream* bugs unrelated to the SP21+ fix (e.g. `create_folder` keyword mismatch, JSON `long` serialization in `compile_project`, online-API drift in `connect_to_device` / `write_variable`) and are tracked there for follow-up PRs.
+
 # codesys-mcp-persistent
 
 MCP server for CODESYS with a persistent UI instance and file-based IPC.
