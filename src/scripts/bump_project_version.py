@@ -140,21 +140,48 @@ try:
 
     primary_project = ensure_project_open(PROJECT_FILE_PATH)
 
+    # Find the Project Information node via the official is_project_info
+    # marker rather than name-matching. Walk the project tree -- the node is
+    # usually at the root, but locating it via the marker is robust against
+    # localised IDE display names ('Projektinformation' in DE, etc.) and
+    # against projects where the node lives at a different depth.
     pi = None
-    for child in primary_project.get_children(False):
+    def _find_pi(node, depth=0, max_depth=4):
+        if depth > max_depth:
+            return None
         try:
-            if child.get_name() == 'Project Information':
-                pi = child
-                break
+            if getattr(node, 'is_project_info', False):
+                return node
         except Exception:
             pass
-    if pi is None:
-        raise RuntimeError(
-            "Project Information node not found at the project root. "
-            "Every CODESYS project should have one as its first child; "
-            "if missing, recreate it via Project menu -> Project Information.")
+        try:
+            for c in node.get_children(False):
+                hit = _find_pi(c, depth + 1, max_depth)
+                if hit is not None:
+                    return hit
+        except Exception:
+            pass
+        return None
+    pi = _find_pi(primary_project)
 
-    before_raw = pi.version
+    # Some projects (notably ones created from the Standard template via the
+    # scripting create_project flow) have no Project Information node at all
+    # -- the IDE adds it lazily the first time the user opens
+    # Project menu -> Project Information. We don't have a documented way to
+    # create one via scripting, so handle it gracefully: skip the metadata
+    # write but still maintain the runtime-readable GVL, which is the
+    # source-of-truth at runtime anyway. The user can add Project Information
+    # manually via the IDE later if they want the metadata side too.
+    pi_missing = pi is None
+    if pi_missing:
+        print("WARNING: Project Information node not found in project tree -- "
+              "skipping metadata write. The runtime anchor (GVL) will still be "
+              "maintained. To add the Project Information node, open the "
+              "Project menu -> Project Information in the IDE; subsequent bumps "
+              "will then update both metadata and GVL.")
+        before_raw = None
+    else:
+        before_raw = pi.version
     before_str = str(before_raw) if before_raw is not None else None
 
     # First-run convention: if no version is set yet, seed at 1.0.0.0 instead
@@ -174,7 +201,8 @@ try:
         print("DEBUG: bump_project_version: level=%s before=%s -> after=%s" % (
             LEVEL, before_str, after_str))
 
-    pi.version = after_str
+    if not pi_missing:
+        pi.version = after_str
 
     # Maintain the runtime-readable version anchor (_MCP_PROJECT_VERSION GVL)
     # so the running PLC carries the same string. Soft-fails so the primary
@@ -187,7 +215,10 @@ try:
     except Exception as save_e:
         print("WARNING: project.save() raised %s -- bump applied in memory but may not persist across IDE close." % save_e)
 
-    print("Project Information.Version: %s -> %s" % (before_str, after_str))
+    if pi_missing:
+        print("Project Information.Version: (skipped -- node missing) -> %s" % after_str)
+    else:
+        print("Project Information.Version: %s -> %s" % (before_str, after_str))
     if gvl_ok:
         print("Runtime anchor: %s.sVersion := '%s'" % (VERSION_GVL_NAME, after_str))
     else:
