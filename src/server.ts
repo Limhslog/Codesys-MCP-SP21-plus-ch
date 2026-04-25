@@ -5,6 +5,9 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as crypto from 'crypto';
+import { URL } from 'url';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -13,6 +16,28 @@ import { CodesysLauncher } from './launcher';
 import { HeadlessExecutor } from './headless';
 import { ScriptManager } from './script-manager';
 import { serverLog, setLogLevel } from './logger';
+
+/**
+ * Download a URL to a temp file. Returns the local file path.
+ * Follows redirects, fails on non-2xx, throws on network errors.
+ * Caller is responsible for removing the file when done.
+ */
+async function downloadToTempFile(url: string, suggestedExt = '.library'): Promise<string> {
+  const u = new URL(url);
+  const tmpDir = path.join(os.tmpdir(), 'codesys-mcp-downloads');
+  await fs.promises.mkdir(tmpDir, { recursive: true });
+  const baseName = path.basename(u.pathname) || `download-${crypto.randomBytes(6).toString('hex')}`;
+  const ext = path.extname(baseName) ? '' : suggestedExt;
+  const tmpPath = path.join(tmpDir, `${Date.now()}-${baseName}${ext}`);
+
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok || !res.body) {
+    throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}`);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  await fs.promises.writeFile(tmpPath, buf);
+  return tmpPath;
+}
 
 // Zod enums for POU tools
 const PouTypeEnum = z.enum(['Program', 'FunctionBlock', 'Function']);
@@ -1061,6 +1086,43 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         result,
         `Library file installed: ${args.libraryFilePath}`
       );
+    }
+  );
+
+  s.tool(
+    'install_library_from_url',
+    "Downloads a .library file from a URL (HTTPS supported, follows redirects) and installs it into the CODESYS Library Repository. Companion to install_library_file for fully-automated bring-up from internal shares, vendor download URLs, or GitHub release assets. Does not need a project to be open.",
+    {
+      url: z.string().describe("Direct URL to the .library file. Must return 2xx; redirects are followed."),
+      keepDownload: z.boolean().optional().describe("If true, the downloaded file is kept on disk (path reported in the response). Default: false (temp file deleted after install)."),
+    },
+    async (args: { url: string; keepDownload?: boolean }) => {
+      let tmpPath: string | null = null;
+      try {
+        tmpPath = await downloadToTempFile(args.url, '.library');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          content: [{ type: 'text' as const, text: `Download failed for ${args.url}: ${msg}` }],
+          isError: true,
+        };
+      }
+      try {
+        const script = scriptManager.prepareScript(
+          'install_library_file',
+          { LIBRARY_FILE_PATH: tmpPath }
+        );
+        const result = await executor.executeScript(script);
+        const successMsg = args.keepDownload
+          ? `Library installed from ${args.url} (download kept at ${tmpPath}).`
+          : `Library installed from ${args.url}.`;
+        const response = formatToolResponse(result, successMsg);
+        return response;
+      } finally {
+        if (!args.keepDownload && tmpPath) {
+          try { await fs.promises.unlink(tmpPath); } catch { /* ignore */ }
+        }
+      }
     }
   );
 
