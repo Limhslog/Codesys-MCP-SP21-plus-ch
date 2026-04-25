@@ -1044,6 +1044,77 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
+  // ─── Git Tools (CODESYS Git plug-in via project.git) ──────────────────
+
+  s.tool(
+    'git_status',
+    "Reports the project's git status: current branch, plus a probe of any status/changes/diff methods exposed on project.git. Read-only. Requires the CODESYS Git plug-in and a project bound to a git working tree (use git_init if not). Diagnostic dump of project.git surface is included.",
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+    },
+    async (args: { projectFilePath: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'git_status',
+        { PROJECT_FILE_PATH: escaped },
+        ['ensure_project_open']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(result, `git_status for ${args.projectFilePath} (see output for branch and probe results).`);
+    }
+  );
+
+  s.tool(
+    'git_init',
+    "Initialises a Git repository for the project's directory (or a custom path) via project.git.init(). One-shot setup; use git_status afterwards to confirm. Requires CODESYS Git plug-in.",
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      localRepoPath: z.string().optional().describe("Filesystem path to initialise the repo at. Defaults to the project file's parent directory."),
+    },
+    async (args: { projectFilePath: string; localRepoPath?: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const repoPath = args.localRepoPath ? resolvePath(args.localRepoPath, workspaceDir) : '';
+      const script = scriptManager.prepareScriptWithHelpers(
+        'git_init',
+        {
+          PROJECT_FILE_PATH: escaped,
+          LOCAL_REPO_PATH: repoPath,
+        },
+        ['ensure_project_open']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(result, `git_init complete for ${args.projectFilePath}.`);
+    }
+  );
+
+  s.tool(
+    'git_commit',
+    "Stages all working-tree changes and commits them via project.git.commit_complete(message, user, mail). Requires the project to already be bound to a git repo (use git_init first if needed).",
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      message: z.string().min(1).describe("Commit message. Multiline OK."),
+      authorName: z.string().min(1).describe("Author name (used as the 'user' parameter to commit_complete)."),
+      authorEmail: z.string().email().describe("Author email."),
+    },
+    async (args: { projectFilePath: string; message: string; authorName: string; authorEmail: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      // Escape message for triple-quoted Python string injection
+      const safeMessage = args.message.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
+      const script = scriptManager.prepareScriptWithHelpers(
+        'git_commit',
+        {
+          PROJECT_FILE_PATH: escaped,
+          COMMIT_MESSAGE: safeMessage,
+          AUTHOR_NAME: args.authorName,
+          AUTHOR_EMAIL: args.authorEmail,
+        },
+        ['ensure_project_open']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(result, `git_commit complete for ${args.projectFilePath}.`);
+    }
+  );
+
   // ─── Library Management Tools ─────────────────────────────────────────
 
   s.tool(
