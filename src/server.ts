@@ -1140,6 +1140,30 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
   );
 
   s.tool(
+    'git_branch_set_upstream_to',
+    "Sets the upstream tracking ref of a local branch to a configured remote via project.git.branch_set_upstream_to(remoteName, branchName?). MANDATORY before the first push to a fresh remote -- per the helpme-codesys.com Git scripting docs (https://content.helpme-codesys.com/en/CODESYS%20Git/_git_using_scripting.html), 'After adding a remote, use project.git.branch_set_upstream_to(origin_remote) before pushing'. Without this call, push() fails with 'The branch X does not track an upstream branch.' Requires an existing git binding on the project, a configured remote (use git_remote_add), and an active CODESYS Professional Developer Edition subscription license -- without the subscription, the tool fails fast with a clear PDE-required message.",
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      remoteName: z.string().min(1).describe("Remote name to track. Conventionally 'origin'."),
+      branchName: z.string().optional().describe("Local branch to configure. Optional; defaults to the current branch."),
+    },
+    async (args: { projectFilePath: string; remoteName: string; branchName?: string }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const script = scriptManager.prepareScriptWithHelpers(
+        'git_branch_set_upstream_to',
+        {
+          PROJECT_FILE_PATH: escaped,
+          REMOTE_NAME: args.remoteName,
+          BRANCH_NAME: args.branchName || '',
+        },
+        ['ensure_project_open']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(result, `git_branch_set_upstream_to complete for ${args.projectFilePath}.`);
+    }
+  );
+
+  s.tool(
     'git_push',
     "Pushes the local branch to a configured remote via project.git.push(). If username + token are both provided, uses the 3-arg overload push(branch, user, SecureString(token)) and derives the current branch when branchName is omitted; otherwise calls push(branch) or push() and relies on git config / Windows Credential Manager / cached credentials. SECURITY NOTE: when token is supplied, it is templated into the IronPython script that the watcher executes -- briefly resident in the watcher's command file on disk. Prefer cached credentials (omit token) when feasible. Requires an existing git binding on the project, a configured remote (use git_remote_add), and an active CODESYS Professional Developer Edition subscription license -- without the subscription, the tool fails fast with a clear PDE-required message.",
     {
