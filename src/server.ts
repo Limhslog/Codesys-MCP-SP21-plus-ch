@@ -5,6 +5,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -13,6 +14,106 @@ import { CodesysLauncher } from './launcher';
 import { HeadlessExecutor } from './headless';
 import { ScriptManager } from './script-manager';
 import { serverLog, setLogLevel } from './logger';
+
+/**
+ * Classifier for `bump_project_version --level=auto`.
+ *
+ * Diffs the project's mcp-mirror/ folder against the latest v* git tag in
+ * the project's parent directory (assumed to be a git repo) and decides
+ * which version part to bump:
+ *
+ *   D (delete) or R (rename)   -> major  (public symbol gone or renamed)
+ *   A (add)                    -> minor  (new public symbol)
+ *   M (modify)                 -> revision (internal change)
+ *   no changes / no v* tag     -> build  (also triggers the seed-at-1.0.0.0
+ *                                          first-run path on the Python side
+ *                                          when version is unset)
+ *
+ * v1 keeps the heuristic at file granularity. A future iteration could
+ * split each modified .st file into its decl block (before
+ * `(* === IMPLEMENTATION === *)`) and impl block (after) to distinguish
+ * decl-changed minor (signature add/change) from impl-only revision.
+ */
+function classifyMcpMirrorChanges(projectDir: string): {
+  level: 'major' | 'minor' | 'revision' | 'build';
+  evidence: string[];
+} {
+  const evidence: string[] = [];
+
+  const isGit = (() => {
+    try {
+      return (
+        execSync(`git -C "${projectDir}" rev-parse --is-inside-work-tree`, {
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim() === 'true'
+      );
+    } catch {
+      return false;
+    }
+  })();
+  if (!isGit) {
+    evidence.push(`'${projectDir}' is not a git repo -- can't classify, defaulting to 'build'`);
+    return { level: 'build', evidence };
+  }
+
+  let baseRef = '';
+  try {
+    baseRef = execSync(
+      `git -C "${projectDir}" describe --tags --abbrev=0 --match "v*"`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim();
+  } catch {
+    evidence.push(
+      'no v* tag found -- first-run, defaulting to build (Python seed-at-1.0.0.0 will fire if Project Information.Version is unset)'
+    );
+    return { level: 'build', evidence };
+  }
+  evidence.push(`baseline: tag ${baseRef}`);
+
+  let raw = '';
+  try {
+    raw = execSync(
+      `git -C "${projectDir}" diff --name-status -M50% ${baseRef} -- mcp-mirror/`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+    );
+  } catch {
+    evidence.push(`git diff against ${baseRef} failed -- defaulting to build`);
+    return { level: 'build', evidence };
+  }
+  if (!raw.trim()) {
+    evidence.push('no changes in mcp-mirror/ since baseline');
+    return { level: 'build', evidence };
+  }
+
+  let hasDelete = false;
+  let hasRename = false;
+  let hasAdd = false;
+  let hasModify = false;
+  for (const line of raw.split('\n').filter((l) => l.trim())) {
+    const status = line[0];
+    const tab = line.indexOf('\t');
+    const rest = tab >= 0 ? line.substring(tab + 1) : '';
+    if (status === 'D') {
+      hasDelete = true;
+      evidence.push(`deleted: ${rest}`);
+    } else if (status === 'R') {
+      hasRename = true;
+      evidence.push(`renamed: ${rest}`);
+    } else if (status === 'A') {
+      hasAdd = true;
+      evidence.push(`added: ${rest}`);
+    } else if (status === 'M') {
+      hasModify = true;
+      evidence.push(`modified: ${rest}`);
+    }
+  }
+
+  if (hasDelete || hasRename) return { level: 'major', evidence };
+  if (hasAdd) return { level: 'minor', evidence };
+  if (hasModify) return { level: 'revision', evidence };
+  return { level: 'build', evidence };
+}
 
 /**
  * IEC 61131-3 identifiers that are reserved for time-literal suffixes or
@@ -1386,26 +1487,36 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'bump_project_version',
-    "Bumps one part of the 4-part Project Information.Version field of the primary project (Major.Minor.Revision.Build) and saves the project. Convention: major = incompatible API break (rename FB / change public signature / remove method); minor = backward-compatible feature add (new FB / GVL / method); revision = bug fix only; build = internal counter, often 0 for hand-released versions. Bumping a higher part resets all lower parts to 0 (e.g. bumping minor resets revision and build to 0). FIRST-RUN: if no version is set yet (None/empty/0.0.0.0), seeds at 1.0.0.0 regardless of level so a first-time bump gives a canonical starting point instead of 0.0.0.1. The Version is exposed at runtime via the Project Information library's GetVersion() helper, which IEC code can call to surface the running version.",
+    "Bumps one part of the 4-part Project Information.Version field of the primary project (Major.Minor.Revision.Build) and saves the project. Convention: major = incompatible API break (rename FB / change public signature / remove method); minor = backward-compatible feature add (new FB / GVL / method); revision = bug fix only; build = internal counter, often 0 for hand-released versions. Bumping a higher part resets all lower parts to 0 (e.g. bumping minor resets revision and build to 0). FIRST-RUN: if no version is set yet (None/empty/0.0.0.0), seeds at 1.0.0.0 regardless of level so a first-time bump gives a canonical starting point instead of 0.0.0.1. The Version is exposed at runtime via the Project Information library's GetVersion() helper, which IEC code can call to surface the running version. AUTO MODE: if level='auto', the tool diffs the project's mcp-mirror/ folder against the latest v* git tag and classifies the change (deletion/rename -> major; addition -> minor; modification -> revision; nothing or first-run -> build/seed). Requires the project's parent dir to be a git repo with at least one v* tag for full classification; otherwise falls back to 'build' (which seeds at 1.0.0.0 when the version is unset).",
     {
       projectFilePath: z.string().describe("Path to the project file."),
-      level: z.enum(['major', 'minor', 'revision', 'build']).describe("Which part of the 4-part version to bump. Major = incompatible API break. Minor = backward-compatible feature add. Revision = bug fix only. Build = internal / CI counter."),
+      level: z.enum(['major', 'minor', 'revision', 'build', 'auto']).describe("Which part of the 4-part version to bump. Major = incompatible API break. Minor = backward-compatible feature add. Revision = bug fix only. Build = internal / CI counter. AUTO classifies via git diff of mcp-mirror/ against the latest v* tag."),
     },
-    async (args: { projectFilePath: string; level: 'major' | 'minor' | 'revision' | 'build' }) => {
+    async (args: { projectFilePath: string; level: 'major' | 'minor' | 'revision' | 'build' | 'auto' }) => {
       const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      let resolvedLevel: 'major' | 'minor' | 'revision' | 'build' = args.level === 'auto' ? 'build' : args.level;
+      let classification: string[] = [];
+
+      if (args.level === 'auto') {
+        const projectDir = path.dirname(escaped);
+        const r = classifyMcpMirrorChanges(projectDir);
+        resolvedLevel = r.level;
+        classification = r.evidence;
+      }
+
       const script = scriptManager.prepareScriptWithHelpers(
         'bump_project_version',
         {
           PROJECT_FILE_PATH: escaped,
-          LEVEL: args.level,
+          LEVEL: resolvedLevel,
         },
         ['ensure_project_open']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
-        result,
-        `bump_project_version (${args.level}) complete for ${args.projectFilePath}.`
-      );
+      const headline = args.level === 'auto'
+        ? `bump_project_version (auto -> ${resolvedLevel}) complete for ${args.projectFilePath}.\nClassification:\n${classification.map((e) => `  - ${e}`).join('\n')}`
+        : `bump_project_version (${resolvedLevel}) complete for ${args.projectFilePath}.`;
+      return formatToolResponse(result, headline);
     }
   );
 
