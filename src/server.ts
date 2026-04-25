@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { URL } from 'url';
+import { spawn } from 'child_process';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -16,6 +17,32 @@ import { CodesysLauncher } from './launcher';
 import { HeadlessExecutor } from './headless';
 import { ScriptManager } from './script-manager';
 import { serverLog, setLogLevel } from './logger';
+
+/** Default install path for the standalone CODESYS Installer (APInstaller). */
+const DEFAULT_APINSTALLER_CLI = 'C:\\Program Files (x86)\\CODESYS\\APInstaller\\APInstaller.CLI.exe';
+
+/** Locate APInstaller.CLI.exe -- env var override wins, otherwise the default path. */
+function locateAPInstallerCli(): string | null {
+  const fromEnv = process.env.CODESYS_APINSTALLER_CLI;
+  const candidate = fromEnv && fromEnv.trim().length > 0 ? fromEnv : DEFAULT_APINSTALLER_CLI;
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+/**
+ * Run a process to completion, capturing stdout+stderr. Resolves with
+ * { code, stdout, stderr }. Rejects only on spawn error (e.g. exe missing).
+ */
+function runProcess(exe: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(exe, args, { windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (b) => { stdout += b.toString('utf-8'); });
+    child.stderr.on('data', (b) => { stderr += b.toString('utf-8'); });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
 
 /**
  * Download a URL to a temp file. Returns the local file path.
@@ -1086,6 +1113,70 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         result,
         `Library file installed: ${args.libraryFilePath}`
       );
+    }
+  );
+
+  s.tool(
+    'install_addon_from_file',
+    "Installs a CODESYS .package add-on (e.g. WAGO PFC libraries bundle, vendor packages) into a CODESYS installation by shelling out to APInstaller.CLI.exe --installAddOnFromFile. Use this for .package bundles; use install_library_file for plain .library files. Does not need CODESYS UI to be running.",
+    {
+      packageFilePath: z.string().describe("Full path to the .package file to install."),
+      installation: z.string().optional().describe("Installation location (e.g. 'C:\\\\Program Files\\\\CODESYS 3.5.21.50'). Defaults to the parent of this MCP's configured CODESYS install."),
+    },
+    async (args: { packageFilePath: string; installation?: string }) => {
+      const cli = locateAPInstallerCli();
+      if (!cli) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `APInstaller.CLI.exe not found. Set CODESYS_APINSTALLER_CLI env var, or install the standalone CODESYS Installer (default path: ${DEFAULT_APINSTALLER_CLI}).`,
+          }],
+          isError: true,
+        };
+      }
+      const pkg = resolvePath(args.packageFilePath, workspaceDir);
+      if (!fs.existsSync(pkg)) {
+        return {
+          content: [{ type: 'text' as const, text: `Package file not found: ${pkg}` }],
+          isError: true,
+        };
+      }
+      // Default installation location = parent of CODESYS\Common\CODESYS.exe
+      // i.e. three dirnames up from config.codesysPath
+      const defaultLocation = path.dirname(path.dirname(path.dirname(config.codesysPath)));
+      const location = args.installation && args.installation.trim().length > 0
+        ? path.normalize(args.installation)
+        : defaultLocation;
+
+      const cliArgs = ['--installAddOnFromFile', '--location', location, '--sourcefile', pkg];
+      let res;
+      try {
+        res = await runProcess(cli, cliArgs);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          content: [{ type: 'text' as const, text: `Failed to spawn ${cli}: ${msg}` }],
+          isError: true,
+        };
+      }
+      const success = res.code === 0;
+      const summary = success
+        ? `Add-on installed: ${pkg} -> ${location}`
+        : `APInstaller exited with code ${res.code}.`;
+      const detail = [
+        summary,
+        '',
+        `Command: "${cli}" ${cliArgs.map((a) => (a.includes(' ') ? `"${a}"` : a)).join(' ')}`,
+        '',
+        '--- stdout ---',
+        res.stdout || '(empty)',
+        '--- stderr ---',
+        res.stderr || '(empty)',
+      ].join('\n');
+      return {
+        content: [{ type: 'text' as const, text: detail }],
+        isError: !success,
+      };
     }
   );
 
