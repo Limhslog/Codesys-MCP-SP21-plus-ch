@@ -14,6 +14,54 @@ import { HeadlessExecutor } from './headless';
 import { ScriptManager } from './script-manager';
 import { serverLog, setLogLevel } from './logger';
 
+/**
+ * IEC 61131-3 identifiers that are reserved for time-literal suffixes or
+ * standard-block I/O conventions. Using these as variable names produces
+ * red-underlined warnings or compile errors in CODESYS.
+ *
+ *   s/t/d/m/h/ms/us/ns -> time-literal suffixes (T#5s, T#100ms, etc.)
+ *   S/R                -> SR/RS flip-flop input names
+ *
+ * The set is lowercased separately from the original casing -- we check
+ * exact-match (case-sensitive) so we catch both 's' and 'S' separately.
+ */
+const RESERVED_IEC_IDENTIFIERS = new Set([
+  's', 't', 'd', 'm', 'h', 'ms', 'us', 'ns',
+  'S', 'R',
+]);
+
+/**
+ * Scan an IEC declarationCode block for VAR declarations whose variable
+ * name collides with a reserved identifier. Returns one warning string
+ * per offending name. Empty list if the input is empty/safe.
+ *
+ * Pattern matches lines of the form `<name> : <type>` and is line-anchored
+ * so it ignores struct member access (`fb.s`) and similar non-declarations.
+ * Catches the first name in each line; multi-name lists like
+ * `s, t : BOOL;` only catch the last comma-separated name (rare but
+ * worth a future tightening).
+ */
+function findReservedIecIdentifiers(declarationCode: string | undefined): string[] {
+  if (!declarationCode) return [];
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  const pattern = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[A-Za-z_]/gm;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(declarationCode)) !== null) {
+    const name = match[1];
+    if (RESERVED_IEC_IDENTIFIERS.has(name) && !seen.has(name)) {
+      seen.add(name);
+      warnings.push(
+        `Reserved IEC identifier '${name}' used as variable name. ` +
+        `Single-letter names like s/t/d/m/h/ms/us/ns are time-literal suffixes (T#5s, T#100ms); ` +
+        `S/R conflict with SR/RS flip-flop semantics. ` +
+        `Rename to a meaningful identifier (e.g. '${name}Inst', '${name}Sample', or use a Hungarian-style prefix like 'st'/'fb'/'b'/'n').`
+      );
+    }
+  }
+  return warnings;
+}
+
 // Zod enums for POU tools
 const PouTypeEnum = z.enum(['Program', 'FunctionBlock', 'Function']);
 const ImplementationLanguageEnum = z.enum([
@@ -364,10 +412,12 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
-        result,
-        `Code set for '${sanPouPath}' in ${args.projectFilePath}. Project saved.`
-      );
+      const reservedWarnings = findReservedIecIdentifiers(args.declarationCode);
+      const baseSuccessMsg = `Code set for '${sanPouPath}' in ${args.projectFilePath}. Project saved.`;
+      const successMsg = reservedWarnings.length > 0
+        ? `${baseSuccessMsg}\n\nWARNING (IEC reserved identifiers detected -- code was set, but compile may flag these):\n  - ${reservedWarnings.join('\n  - ')}`
+        : baseSuccessMsg;
+      return formatToolResponse(result, successMsg);
     }
   );
 
@@ -622,10 +672,12 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
-        result,
-        `GVL '${args.name}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
-      );
+      const reservedWarnings = findReservedIecIdentifiers(args.declarationCode);
+      const baseSuccessMsg = `GVL '${args.name}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`;
+      const successMsg = reservedWarnings.length > 0
+        ? `${baseSuccessMsg}\n\nWARNING (IEC reserved identifiers detected -- GVL was created, but compile may flag these):\n  - ${reservedWarnings.join('\n  - ')}`
+        : baseSuccessMsg;
+      return formatToolResponse(result, successMsg);
     }
   );
 
