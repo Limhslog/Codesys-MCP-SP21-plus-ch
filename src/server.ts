@@ -1181,6 +1181,35 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
   );
 
   s.tool(
+    'update_all_libraries',
+    "Updates every library reference in a project's Library Manager to a target version (default '*' = always-newest installed). By default skips system-pinned references; set includeSystem=true to also rewrite those (risky for device-tied projects). Saves the project on success.",
+    {
+      projectFilePath: z.string().describe("Path to the project file."),
+      targetVersion: z.string().optional().describe("Version to set for each library reference. '*' (default) means always-newest installed; otherwise an exact version string like '3.5.20.0'."),
+      includeSystem: z.boolean().optional().describe("If true, also update libraries flagged as system. Default: false. Be careful -- changing system library versions can break device-tied projects."),
+    },
+    async (args: { projectFilePath: string; targetVersion?: string; includeSystem?: boolean }) => {
+      const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const target = (args.targetVersion ?? '*').trim();
+      const include = args.includeSystem === true;
+      const script = scriptManager.prepareScriptWithHelpers(
+        'update_all_libraries',
+        {
+          PROJECT_FILE_PATH: escaped,
+          TARGET_VERSION: target,
+          INCLUDE_SYSTEM: include ? 'True' : 'False',
+        },
+        ['ensure_project_open']
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `Library references updated to '${target}' in ${args.projectFilePath}. Project saved.`
+      );
+    }
+  );
+
+  s.tool(
     'install_library_from_url',
     "Downloads a .library file from a URL (HTTPS supported, follows redirects) and installs it into the CODESYS Library Repository. Companion to install_library_file for fully-automated bring-up from internal shares, vendor download URLs, or GitHub release assets. Does not need a project to be open.",
     {
