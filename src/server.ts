@@ -1044,6 +1044,26 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
+  s.tool(
+    'install_library_file',
+    "Installs a .library file into the CODESYS Library Repository (system-wide). Useful for automating library bring-up on a fresh machine when the CODESYS Store auto-download is broken (e.g. WAGO libraries). Does not need a project to be open.",
+    {
+      libraryFilePath: z.string().describe("Full path to the .library file on disk to install."),
+    },
+    async (args: { libraryFilePath: string }) => {
+      const escaped = resolvePath(args.libraryFilePath, workspaceDir);
+      const script = scriptManager.prepareScript(
+        'install_library_file',
+        { LIBRARY_FILE_PATH: escaped }
+      );
+      const result = await executor.executeScript(script);
+      return formatToolResponse(
+        result,
+        `Library file installed: ${args.libraryFilePath}`
+      );
+    }
+  );
+
   // ─── Resources ───────────────────────────────────────────────────────
 
   server.resource(
