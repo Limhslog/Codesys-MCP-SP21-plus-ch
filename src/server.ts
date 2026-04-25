@@ -1066,10 +1066,10 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'git_init',
-    "Initialises a Git repository for the project's directory (or a custom path) via project.git.init(). One-shot setup; use git_status afterwards to confirm. Requires the CODESYS Git plug-in AND an active CODESYS Professional Developer Edition subscription license -- without the subscription, the tool fails fast with a clear PDE-required message (the runtime 'HasGitLicense' rule gates every project.git.* call).",
+    "Initialises a Git working tree for the project via project.git.init(). CODESYS Git uses a dual-storage model: the .project file stays where it is, the git repo lives in a SEPARATE empty directory. If localRepoPath is omitted (or equals the project's own folder), the tool auto-defaults to a '<project_basename>_git' sibling and auto-creates it; if it exists and is non-empty, the tool fails with a clear hint. One-shot setup; use git_status afterwards to confirm. Requires the CODESYS Git plug-in AND an active CODESYS Professional Developer Edition subscription license -- without the subscription, the tool fails fast with a clear PDE-required message (the runtime 'HasGitLicense' rule gates every project.git.* call).",
     {
       projectFilePath: z.string().describe("Path to the project file."),
-      localRepoPath: z.string().optional().describe("Filesystem path to initialise the repo at. Defaults to the project file's parent directory."),
+      localRepoPath: z.string().optional().describe("Filesystem path for the git working tree. Must be a separate empty directory, NOT the project's own folder. If omitted, defaults to a '<project_basename>_git' sibling and auto-creates it."),
     },
     async (args: { projectFilePath: string; localRepoPath?: string }) => {
       const escaped = resolvePath(args.projectFilePath, workspaceDir);

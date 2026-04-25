@@ -19,9 +19,39 @@ try:
             "the project does not yet have a git binding. The init() "
             "call below should establish one if a repo path is supplied.")
 
-    if not LOCAL_REPO_PATH:
-        # Default: init a repo in the project's own directory
-        LOCAL_REPO_PATH = os.path.dirname(PROJECT_FILE_PATH)
+    # CODESYS Git uses a dual-storage model: the .project file stays where it
+    # is, the git working tree lives in a SEPARATE empty directory. Pointing
+    # init() at the project's own folder fails with "DirectoryNotEmpty", and
+    # passing nothing previously dumped the user into that trap. Default to a
+    # '<project_basename>_git' sibling and auto-create it; verify it is empty
+    # before handing off to CODESYS so we surface a clear hint instead of
+    # CODESYS's lower-level error.
+    project_dir = os.path.dirname(PROJECT_FILE_PATH)
+    project_stem = os.path.splitext(os.path.basename(PROJECT_FILE_PATH))[0]
+    if not LOCAL_REPO_PATH or os.path.normcase(os.path.abspath(LOCAL_REPO_PATH)) == os.path.normcase(os.path.abspath(project_dir)):
+        if LOCAL_REPO_PATH:
+            print("DEBUG: requested LocalRepoPath equals the project dir; "
+                  "rerouting to a sibling because CODESYS Git requires a separate empty dir.")
+        # Use a sibling so we don't write into the (likely shared) project folder
+        LOCAL_REPO_PATH = os.path.join(os.path.dirname(project_dir), project_stem + "_git")
+        print("DEBUG: defaulted LocalRepoPath to '%s'" % LOCAL_REPO_PATH)
+
+    if not os.path.exists(LOCAL_REPO_PATH):
+        print("DEBUG: creating LocalRepoPath '%s'" % LOCAL_REPO_PATH)
+        os.makedirs(LOCAL_REPO_PATH)
+    elif not os.path.isdir(LOCAL_REPO_PATH):
+        raise RuntimeError(
+            "LocalRepoPath '%s' exists but is not a directory." % LOCAL_REPO_PATH)
+    else:
+        existing = os.listdir(LOCAL_REPO_PATH)
+        if existing:
+            raise RuntimeError(
+                "LocalRepoPath '%s' is not empty (contains %d entries: %s). "
+                "CODESYS Git's dual-storage model requires a fresh empty "
+                "directory separate from the project's own folder. Either "
+                "pass a different localRepoPath or empty this one, then "
+                "retry git_init." % (
+                    LOCAL_REPO_PATH, len(existing), existing[:5]))
 
     print("DEBUG: calling git.init('%s')" % LOCAL_REPO_PATH)
     git.init(LOCAL_REPO_PATH)
