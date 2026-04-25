@@ -152,6 +152,14 @@ Smallest patch to get the project working on SP21+:
 - Wider refactor (e.g. swapping IronPython for CPython subprocess, replacing file IPC with sockets) — only the threading model needs to change to fix the regression.
 - Updating the README architecture section — should be done as part of the actual code change, not in this design doc.
 
+## 8. Sources
+
+- [CODESYS Forge — Python and threads](https://forum.codesys.com/viewtopic.php?f=18&t=4859) — origin of the "we do not officially or explicitly support threading" quote and the discussion of primary-thread message-pump semantics.
+- [CODESYS Scripting Engine docs index](https://content.helpme-codesys.com/en/ScriptingEngine/index.html) — official scripting reference index (note: the public index does not document `execute_on_primary_thread`, which is consistent with the API being internal-only / removed).
+- [Schneider Electric Machine Expert ScriptEngine — system module reference](https://product-help.schneider-electric.com/Machine%20Expert/V1.1/en/ScriptEngine/topics/system.htm) — third-party docs (Schneider's product is downstream of CODESYS) describing the historical `execute_on_primary_thread(async)` signature.
+- [CODESYS V3.5 SP21 Patch 5 release notes (WAGO mirror)](https://downloadcenter.wago.com/api/uploads/Release_Notes_CODESYS_V3_5_SP_21_Patch_5_4af34c3ba6.pdf) — release notes; no scripting-related entries, so the API removal isn't called out in user-facing changelogs.
+- Local `ScriptSystem.pyi` stub from the SP21 Patch 5 install: `C:\Program Files\CODESYS 3.5.21.50\CODESYS\ScriptLib\Stubs\scriptengine\ScriptSystem.pyi` — primary evidence the API is gone (zero matches for `primary_thread`, `invoke`, `marshal`, `dispatch`).
+
 ---
 
 *Doc written 2026-04-25 against luke-harriman/Codesys-MCP @ commit `HEAD` of `main`, fork at https://github.com/phobicdotno/Codesys-MCP.*
