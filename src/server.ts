@@ -110,11 +110,22 @@ function appendChangelogEntry(
 }
 
 function parseBumpedVersion(output: string): { from: string | null; to: string | null } {
-  // Python script prints: "Project Information.Version: <before> -> <after>"
-  const m = /Project Information\.Version:\s*(\S+)\s*->\s*(\S+)/.exec(output);
-  if (!m) return { from: null, to: null };
-  const from = m[1] === 'None' ? null : m[1];
-  return { from, to: m[2] };
+  // Python script prints one of:
+  //   "Project Information.Version: <before> -> <after>"
+  //   "Project Information.Version: (skipped -- node missing) -> <after>"
+  // Use a non-greedy capture so the "skipped" parenthetical isn't mis-parsed
+  // as the from-version. Also fall back to the runtime anchor line on the
+  // off chance the metadata line ever changes shape again.
+  const m = /Project Information\.Version:\s*(.+?)\s*->\s*(\S+)/.exec(output);
+  if (m) {
+    const fromRaw = m[1].trim();
+    const isSkipped = fromRaw.startsWith('(') || fromRaw.toLowerCase() === 'none';
+    return { from: isSkipped ? null : fromRaw, to: m[2] };
+  }
+  // Last-ditch: take the runtime anchor's value -- always reflects the post-bump version.
+  const a = /Runtime anchor:\s*_MCP_PROJECT_VERSION\.sVersion\s*:=\s*'([^']+)'/.exec(output);
+  if (a) return { from: null, to: a[1] };
+  return { from: null, to: null };
 }
 
 /**
