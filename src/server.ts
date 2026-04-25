@@ -996,17 +996,25 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'download_to_device',
-    'Downloads the compiled application to the PLC device. Attempts online change first, falls back to full download.',
+    'Downloads the compiled application to the PLC device. Attempts online change first, falls back to full download. Same login-dialog handling as connect_to_device: loginWaitSeconds controls how long the script waits for state stabilisation if a credential dialog pops up.',
     {
       projectFilePath: z.string().describe("Path to the project file."),
+      loginWaitSeconds: z.number().int().min(0).max(600).optional().describe("Seconds to wait for application state to stabilise after login() returns. Default: 60. Range 0-600."),
     },
-    async (args: { projectFilePath: string }) => {
+    async (args: { projectFilePath: string; loginWaitSeconds?: number }) => {
       const escaped = resolvePath(args.projectFilePath, workspaceDir);
+      const waitSec = args.loginWaitSeconds ?? 60;
       const script = scriptManager.prepareScriptWithHelpers(
-        'download_to_device', { PROJECT_FILE_PATH: escaped },
+        'download_to_device',
+        {
+          PROJECT_FILE_PATH: escaped,
+          LOGIN_WAIT_SECONDS: String(waitSec),
+        },
         ['ensure_project_open', 'ensure_online_connection']
       );
-      const result = await executor.executeScript(script, 120_000);
+      // Tool-side timeout = wait window + 120s headroom for the actual download
+      const ipcTimeoutMs = (waitSec + 120) * 1000;
+      const result = await executor.executeScript(script, ipcTimeoutMs);
       return formatToolResponse(result, `Application downloaded to device for ${args.projectFilePath}.`);
     }
   );
