@@ -19,36 +19,74 @@ try:
     if not hasattr(online_app, 'login'):
         raise TypeError("Online application does not support login().")
 
-    # Discover OnlineChangeOption members defensively. Different SPs expose
-    # different names. Build candidate enum values in priority order.
+    # Discover login-mode enum members defensively. Different SPs expose the
+    # enum under different names and different module locations:
+    #   - Pre-SP21: script_engine.OnlineChangeOption (TryOnlineChange / WithDownload / ...)
+    #   - SP21+:    script_engine.LoginMode (rebadged; some members renamed/removed)
+    #   - Some builds attach it to the online_app object instead.
+    # Probe every known location and merge the discovered members.
+    enum_sources = []
+    for src_name in ('LoginMode', 'OnlineChangeOption'):
+        if hasattr(script_engine, src_name):
+            try:
+                enum_sources.append((src_name, getattr(script_engine, src_name)))
+            except Exception:
+                pass
+    for src_name in ('LoginMode', 'OnlineChangeOption'):
+        if hasattr(online_app, src_name):
+            try:
+                enum_sources.append(('online_app.' + src_name, getattr(online_app, src_name)))
+            except Exception:
+                pass
+    if not enum_sources:
+        print("DEBUG: No login-mode enum found on script_engine or online_app -- relying on plain-bool fallbacks.")
+
+    # Priority order: prefer "no-download / online change" semantics (least
+    # invasive), then download variants, then null/none.
+    preferred_order = ('TryOnlineChange', 'OnlineChangeOnly', 'Try', 'OnlineChange',
+                       'WithDownload', 'ForceDownload', 'Download',
+                       'None_', 'None')
+
     enum_candidates = []
-    if hasattr(script_engine, 'OnlineChangeOption'):
-        oc = script_engine.OnlineChangeOption
-        oc_members = sorted([m for m in dir(oc) if not m.startswith('_')])
-        print("DEBUG: OnlineChangeOption members: %s" % oc_members)
-        # Priority order: prefer "try"-ish (no-download), then "download" variants
-        for preferred in ('Try', 'TryOnlineChange', 'OnlineChangeOnly',
-                          'WithDownload', 'ForceDownload', 'None_', 'None'):
-            if preferred in oc_members:
+    seen_keys = set()
+    for src_name, oc in enum_sources:
+        try:
+            members = sorted([m for m in dir(oc) if not m.startswith('_')])
+        except Exception:
+            members = []
+        print("DEBUG: %s members: %s" % (src_name, members))
+        for preferred in preferred_order:
+            if preferred in members:
+                key = '%s.%s' % (src_name, preferred)
+                if key not in seen_keys:
+                    try:
+                        enum_candidates.append((key, getattr(oc, preferred)))
+                        seen_keys.add(key)
+                    except Exception:
+                        pass
+        for m in members:
+            key = '%s.%s' % (src_name, m)
+            if key not in seen_keys:
                 try:
-                    enum_candidates.append((preferred, getattr(oc, preferred)))
-                except Exception:
-                    pass
-        # Append all remaining members as fallbacks
-        for m in oc_members:
-            if m not in [n for n, _ in enum_candidates]:
-                try:
-                    enum_candidates.append((m, getattr(oc, m)))
+                    enum_candidates.append((key, getattr(oc, m)))
+                    seen_keys.add(key)
                 except Exception:
                     pass
 
     # Build call-shape candidates for login(): a list of (description, args-tuple).
     call_shapes = []
     for nm, val in enum_candidates:
+        # Two-arg shape (most common SP21+): (mode, force_download_bool).
         call_shapes.append(("login(%s, False)" % nm, (val, False)))
         call_shapes.append(("login(%s, True)" % nm, (val, True)))
+        # One-arg shape (older).
         call_shapes.append(("login(%s)" % nm, (val,)))
-    # Also try plain bools and no-arg as fall-backs (for very old SPs)
+    # Three-arg shape some builds use: (mode, secondary-mode, bool). Try with
+    # the strongest "do nothing" pair we can find at the front of candidates.
+    if enum_candidates:
+        first_nm, first_val = enum_candidates[0]
+        call_shapes.append(("login(%s, %s, False)" % (first_nm, first_nm), (first_val, first_val, False)))
+    # Also try plain bools and no-arg as fall-backs (for very old SPs).
     call_shapes.append(("login(False)", (False,)))
     call_shapes.append(("login(True)", (True,)))
     call_shapes.append(("login()", ()))

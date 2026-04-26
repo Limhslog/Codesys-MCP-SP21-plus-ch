@@ -46,12 +46,51 @@ try:
     parent_name = getattr(parent_object, 'get_name', lambda: str(parent_object))()
     print("DEBUG: Using parent object: %s" % parent_name)
 
-    # Create the folder
-    if not hasattr(parent_object, 'create_folder'):
-        raise TypeError("Parent object '%s' of type %s does not support create_folder." % (parent_name, type(parent_object).__name__))
+    # Create the folder. The factory shape changed across SPs:
+    #   - Older: parent.create_folder(name='X')             -- legacy API
+    #   - SP21+:  parent.create_folder(name='X')             -- still preferred
+    #             OR parent.create_object(typeUuid=<uuid>, name='X')
+    #             OR parent.add(script_engine.types.IecFolder, name='X')
+    # Some Application objects in SP21+ don't expose create_folder at all;
+    # fall through to the alternate factories so the tool works against
+    # both old and new project shapes.
+    new_folder = None
+    if hasattr(parent_object, 'create_folder'):
+        try:
+            print("DEBUG: Calling parent.create_folder(name='%s')" % FOLDER_NAME)
+            new_folder = parent_object.create_folder(name=FOLDER_NAME)
+        except Exception as e:
+            print("WARN: parent.create_folder() raised: %s -- trying alternate factories." % e)
+            new_folder = None
 
-    print("DEBUG: Calling create_folder: Name='%s'" % FOLDER_NAME)
-    new_folder = parent_object.create_folder(name=FOLDER_NAME)
+    if new_folder is None and hasattr(parent_object, 'create_object'):
+        # CODESYS folder type UUID. The canonical "generic IEC folder" type
+        # ID has been stable across SP19-SP22; verified via the SP22 stub
+        # Stubs/scriptengine/types.pyi and the helpme-codesys.com docs for
+        # ScriptObject.create_object. If a future SP rotates this UUID, the
+        # types.IecFolder branch below picks up the canonical reference
+        # automatically.
+        FOLDER_TYPE_UUID = '85d1215e-6520-4983-9a55-2d39d1f24cb4'
+        try:
+            print("DEBUG: parent.create_folder() unavailable. Trying parent.create_object(typeUuid=%s, name='%s')" % (FOLDER_TYPE_UUID, FOLDER_NAME))
+            new_folder = parent_object.create_object(typeUuid=FOLDER_TYPE_UUID, name=FOLDER_NAME)
+        except Exception as e:
+            print("WARN: parent.create_object(typeUuid=%s) raised: %s" % (FOLDER_TYPE_UUID, e))
+            new_folder = None
+
+    if new_folder is None and hasattr(script_engine, 'types') and hasattr(script_engine.types, 'IecFolder') and hasattr(parent_object, 'add'):
+        try:
+            print("DEBUG: Trying parent.add(script_engine.types.IecFolder, name='%s')" % FOLDER_NAME)
+            new_folder = parent_object.add(script_engine.types.IecFolder, name=FOLDER_NAME)
+        except Exception as e:
+            print("WARN: parent.add(types.IecFolder) raised: %s" % e)
+            new_folder = None
+
+    if new_folder is None:
+        raise TypeError(
+            "Parent object '%s' of type %s does not support any known folder-creation factory: "
+            "tried create_folder, create_object(typeUuid=...), and add(script_engine.types.IecFolder)." % (
+                parent_name, type(parent_object).__name__))
 
     if new_folder:
         new_folder_name = getattr(new_folder, 'get_name', lambda: FOLDER_NAME)()
