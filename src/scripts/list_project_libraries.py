@@ -160,7 +160,21 @@ try:
     project_info = collect_project_info(primary_project)
     devices = collect_devices(primary_project)
     ide_version = sys.version  # IronPython under CODESYS reports the IDE
+    # Project-wide compiler version selector. Available since ScriptEngine
+    # 4.2.0.0; older IDEs return None / raise. Captured here so a manual
+    # change in the IDE ("Project > Project Settings > Compiler version")
+    # leaves a textual trace in mcp-mirror/library.md instead of being
+    # invisible to the release classifier (binary-only diff -> SHA fallback).
+    compiler_version = None
+    try:
+        if hasattr(primary_project, 'get_compilerversion'):
+            cv = primary_project.get_compilerversion()
+            if cv is not None:
+                compiler_version = str(cv)
+    except Exception as e:
+        print("DEBUG: get_compilerversion() failed: %s" % e)
     print("DEBUG: project_info: %s" % project_info)
+    print("DEBUG: compiler_version: %s" % compiler_version)
     print("DEBUG: %d device(s) found." % len(devices))
 
     containers = find_libman_containers(primary_project)
@@ -170,6 +184,7 @@ try:
         'project': project_basename,
         'project_info': project_info,
         'ide_version': ide_version,
+        'compiler_version': compiler_version,
         'devices': devices,
         'containers': [],
         'total_references': 0,

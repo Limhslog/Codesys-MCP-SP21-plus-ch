@@ -253,7 +253,7 @@ interface ContainerData {
 interface LibrariesData {
   project?: string;
   project_info?: { version?: string | null; title?: string | null; company?: string | null; author?: string | null };
-  ide_version?: string; devices?: DeviceData[]; containers: ContainerData[]; total_references: number;
+  ide_version?: string; compiler_version?: string | null; devices?: DeviceData[]; containers: ContainerData[]; total_references: number;
 }
 interface PouEntry { path: string; type?: string; declaration?: string; implementation?: string; }
 
@@ -273,6 +273,7 @@ function renderLibraryMd(libs: LibrariesData, runtimeAnchorVersion?: string): st
   if (pi.company) L.push(`| Project Information.Company | ${pi.company} |`);
   if (pi.author) L.push(`| Project Information.Author | ${pi.author} |`);
   if (libs.ide_version) L.push(`| CODESYS Development System | \`${libs.ide_version.replace(/\s+/g, ' ').trim()}\` |`);
+  if (libs.compiler_version) L.push(`| Project compiler version | \`${libs.compiler_version}\` |`);
   if (runtimeAnchorVersion) L.push(`| Runtime anchor | \`_MCP_PROJECT_VERSION.sVersion := "${runtimeAnchorVersion}"\` |`);
   L.push('');
   if (libs.devices && libs.devices.length > 0) {
@@ -1692,6 +1693,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
           project?: string;
           project_info?: ProjectInfo;
           ide_version?: string;
+          compiler_version?: string | null;
           devices?: Device[];
           containers: Container[];
           total_references: number;
@@ -1759,6 +1761,9 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         }
         if (parsed.ide_version) {
           headerLines.push(`IDE: ${parsed.ide_version.replace(/\s+/g, ' ').trim()}`);
+        }
+        if (parsed.compiler_version) {
+          headerLines.push(`Compiler version: ${parsed.compiler_version}`);
         }
         if (parsed.devices && parsed.devices.length > 0) {
           headerLines.push(`Devices (${parsed.devices.length}):`);
