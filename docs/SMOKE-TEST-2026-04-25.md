@@ -1,8 +1,7 @@
 # Smoke test -- 2026-04-25 (post device-side fix + late-day extensions)
 
-End-to-end test of every MCP tool exposed by `codesys-mcp-persistent`
-on the [`sp21-plus-migration-notes`](https://github.com/phobicdotno/Codesys-MCP/tree/sp21-plus-migration-notes)
-branch as of end-of-day 2026-04-25. Covers the watcher rewrite that
+End-to-end test of every MCP tool exposed by [`phobicdotno/Codesys-MCP-SP21-plus`](https://github.com/phobicdotno/Codesys-MCP-SP21-plus)
+as of end-of-day 2026-04-25 (then on the now-deleted `sp21-plus-migration-notes` working branch; the same commits are reachable from `main`). Covers the watcher rewrite that
 unblocked SP21+/SP22, the device-side login + write API fixes, and
 the late-afternoon additions: six new `git_*` tools, `mirror_export`,
 launcher refuse-on-duplicate guard, and the `list_project_libraries`
@@ -10,7 +9,7 @@ rewrite.
 
 ## Environment
 
-- MCP server source: this fork @ `sp21-plus-migration-notes` HEAD
+- MCP server source: this fork @ HEAD on 2026-04-25
   (commits `93a105a`..`0a4c1a0` -- inclusive of the late-afternoon
   additions: `e236a0c` git tools, `3623c45` license-gate rewrite,
   `95a884b` launcher refuse-on-duplicate, `9b766c8` list_project_libraries
@@ -176,4 +175,4 @@ the `(* Project path: ... *)` header convention.
 
 ---
 
-*Smoke test executed against this fork @ `sp21-plus-migration-notes` HEAD on 2026-04-25.*
+*Smoke test executed against this fork @ HEAD on 2026-04-25.*
