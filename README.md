@@ -29,19 +29,40 @@ Unlike headless-only approaches that spawn a new CODESYS process per command, th
 
 ## Installation
 
-This is a Node.js MCP server. There is no `pip install` — the `.py` files under `src/scripts/` are CODESYS IronPython templates bundled inside the npm package, not a separate Python distribution.
+This is a Node.js MCP server published to the npm registry as **`codesys-mcp-sp21-plus`** by the fork maintainer (`phobic`). It is **this fork** — not the upstream `luke-harriman/Codesys-MCP` and not a Python package. There is no `pip install`; the `.py` files under `src/scripts/` are CODESYS IronPython templates bundled inside the npm package itself.
 
 **Requirements:** Node.js 18+, Windows, CODESYS 3.5 SP19, SP21 (3.5.21.x), or SP22 (3.5.22.x) installed. CODESYS Git plugin tools (`git_init`, `git_commit`, `git_push`, etc.) additionally require an active **CODESYS Professional Developer Edition** subscription license.
+
+### Install the fork from npm
 
 ```bash
 npm install -g codesys-mcp-sp21-plus
 ```
 
-That puts the `codesys-mcp-sp21-plus` binary on your PATH. Wire it into `.mcp.json` per [Quick Start](#quick-start), then start Claude Code.
+That single command:
 
-### From source (development / unreleased changes)
+- downloads the published tarball from https://www.npmjs.com/package/codesys-mcp-sp21-plus
+- installs it globally (`-g`) so the `codesys-mcp-sp21-plus` binary is on your PATH (typically `%APPDATA%\npm\` on Windows)
+- pulls in its 4 dependencies (`@modelcontextprotocol/sdk`, `commander`, `uuid`, `zod`) automatically
 
-If you want to track this fork's `sp21-plus-migration-notes` branch directly, contribute fixes, or pin to a specific commit, install from source instead:
+Verify the install with:
+
+```bash
+codesys-mcp-sp21-plus --version
+codesys-mcp-sp21-plus --detect       # lists installed CODESYS versions
+```
+
+Then wire it into `.mcp.json` per [Quick Start](#quick-start) and start Claude Code.
+
+To upgrade later (after a new version is published to npm):
+
+```bash
+npm install -g codesys-mcp-sp21-plus@latest
+```
+
+### Install the fork from source (development / unreleased changes)
+
+If you want to track this fork's `sp21-plus-migration-notes` branch directly, contribute fixes, or pin to a specific commit instead of the published version, clone and link it:
 
 ```bash
 git clone https://github.com/phobicdotno/Codesys-MCP-SP21-plus.git
