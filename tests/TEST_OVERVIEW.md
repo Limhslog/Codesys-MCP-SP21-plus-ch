@@ -69,7 +69,7 @@ Status legend: **✅ working** • **⚠ degraded** (works but with known gotcha
 | `create_method` | ✅ | Creates a Method on a parent FB | 0.5–1.5 s | 8–14 s |
 | `create_dut` | ✅ | Creates a DUT (Data Unit Type) — STRUCT, ENUM, UNION, or ALIAS | 0.5–1.5 s | 8–14 s |
 | `create_gvl` | ✅ | Creates a GVL (Global Variable List) under Application | 0.5–1.5 s | 8–14 s |
-| `create_folder` | ✅ (fixed [`2607063`](https://github.com/phobicdotno/Codesys-MCP/commit/2607063), runtime verification pending) | Creates a virtual folder for organizing the object tree. Now falls back through `create_object(typeUuid=...)` and `types.IecFolder` if the legacy `create_folder()` is unavailable. | 0.5–1.5 s (expected) | 8–14 s (expected) |
+| `create_folder` | ✅ (fixed [`c87f3a9`](https://github.com/phobicdotno/Codesys-MCP/commit/c87f3a9), runtime-verified) | Creates a virtual folder under the named parent (typically `Application`). Tries `parent.create_folder(name)` then walks `parent.get_children()` to detect side-effect-only success (the API returns void). Falls back through `project.create_folder(name, SV_POU_GUID)` and `create_object(typeUuid)` for older SPs. | 1–3 s (typical) | 8–14 s (typical) |
 | `delete_object` | ✅ | Calls `obj.remove()` on the object resolved via `find_object_by_path_robust`. Saves after. | 1.54 s (measured) | 27.4 s (measured) |
 | `rename_object` | ✅ | Sets `obj.set_name()`. Saves. | 0.5–1.5 s | 8–14 s |
 
@@ -122,21 +122,26 @@ These don't talk to CODESYS at all — they `execSync` `git` from the project's 
 
 ## Deep dive on the broken tools — all fixed in [`2607063`](https://github.com/phobicdotno/Codesys-MCP/commit/2607063)
 
-### 1. `create_folder` — fixed (SP21+ factory fallback)
+### 1. `create_folder` — fixed in [`c87f3a9`](https://github.com/phobicdotno/Codesys-MCP/commit/c87f3a9) (4-iteration debug saga)
 
-**Symptom:** Per the project memory, `create_folder` was flagged as a fork bug and removed from the recommended workflow.
+**Symptom:** `create_folder` was flagged as a fork bug for years and removed from the recommended workflow.
 
-**Root cause** (was in [`src/scripts/create_folder.py`](../src/scripts/create_folder.py)):
+**Real root cause:** SP22's `create_folder` methods (both `ScriptObject.create_folder` and `ScriptProject.create_folder`) **return void** (Python None) — the folder is created via side effect, the return value carries no information. Earlier fork code treated None as "this strategy failed" and silently fell through every fallback.
 
-The script called `parent_object.create_folder(name=FOLDER_NAME)` directly. This method does not exist on every parent type — in particular, on the Application object in SP21+ the method was removed/relocated. The script's only guard was a `hasattr(parent_object, 'create_folder')` check that threw `TypeError`, not a graceful fallback.
+**Iteration story** (each commit on the fork):
 
-**Fix landed:** the script now tries three factories in order:
+| Version | Commit | Approach | Result |
+|---|---|---|---|
+| v1 | [`2607063`](https://github.com/phobicdotno/Codesys-MCP/commit/2607063) | `parent.create_folder(name=FOLDER_NAME)` | FAIL — SP22 stub uses `foldername`, not `name`. Got `unexpected keyword argument 'name'`. |
+| v2 | [`e07f281`](https://github.com/phobicdotno/Codesys-MCP/commit/e07f281) | positional + `foldername=` fallback | FAIL — silent None return, fell through every strategy. |
+| v3 | [`32e6120`](https://github.com/phobicdotno/Codesys-MCP/commit/32e6120) | added `primary_project.create_folder(name, SV_POU_GUID)` first; also dropped the ScriptManager template cache so hot-reload works | FAIL — same root cause as v2. |
+| v4 | [`c87f3a9`](https://github.com/phobicdotno/Codesys-MCP/commit/c87f3a9) | walk `parent.get_children(False)` after each call to detect side-effect-only success | **PASS** — verified end-to-end on MCPTest2. |
 
-1. `parent.create_folder(name=...)` — the legacy/SP19-style API.
-2. `parent.create_object(typeUuid='85d1215e-6520-4983-9a55-2d39d1f24cb4', name=...)` — the SP21+ canonical pathway. Type UUID is the documented "generic IEC folder" type (verified against the SP22 stubs).
-3. `parent.add(script_engine.types.IecFolder, name=...)` — older legacy pathway some SPs still expose.
+**v4 verified:** ran `create_folder(folderName='Test_Bench_Folder', parentPath='PLCWinNT/Plc Logic/Application')` → folder appeared in IDE tree, `delete_object` removed it cleanly.
 
-Each path catches its own exception so a transient failure on one factory falls through to the next instead of aborting the whole tool. Final `TypeError` enumerates every factory that was tried so a future SP rotation surfaces clearly.
+**Side benefit from v3:** dropped the ScriptManager in-memory template cache. The cost (~1 ms per call vs ~1.5 s of CODESYS execution time) is invisible; the win is that edits to `dist/scripts/` take effect without an MCP restart, which made iterating on v4 inside one debug session possible.
+
+**Lesson for future fork work:** SP22's scripting API has a class of methods that mutate via side effect and return void. When porting fork scripts, **always verify by walking children** — never check the return value of `create_*`. Probably applies to `create_pou` / `create_dut` / `create_gvl` too; worth a separate audit pass.
 
 ### 2. `compile_project` and `get_compile_messages` — fixed (json `long` coercion)
 
