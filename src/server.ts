@@ -843,6 +843,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
       // Escape for triple-quoted Python strings
       const sanDecl = (args.declarationCode ?? '').replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
       const sanImpl = (args.implementationCode ?? '').replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
+      // Distinguish "argument provided" from "argument is empty string". An
+      // omitted declaration must NOT reach decl_obj.replace('') -- doing so
+      // wipes the POU's PROGRAM/VAR...END_VAR block, leaving an UNKNOWN POU.
+      const setDecl = args.declarationCode !== undefined ? 'True' : 'False';
+      const setImpl = args.implementationCode !== undefined ? 'True' : 'False';
       const script = scriptManager.prepareScriptWithHelpers(
         'set_pou_code',
         {
@@ -850,6 +855,8 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
           POU_FULL_PATH: sanPouPath,
           DECLARATION_CONTENT: sanDecl,
           IMPLEMENTATION_CONTENT: sanImpl,
+          SET_DECLARATION: setDecl,
+          SET_IMPLEMENTATION: setImpl,
         },
         ['ensure_project_open', 'find_object_by_path']
       );

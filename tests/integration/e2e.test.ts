@@ -58,11 +58,40 @@ describe('E2E Script Preparation', () => {
         POU_FULL_PATH: 'Application/MyPOU',
         DECLARATION_CONTENT: sanDecl,
         IMPLEMENTATION_CONTENT: sanImpl,
+        SET_DECLARATION: 'True',
+        SET_IMPLEMENTATION: 'True',
       },
       ['ensure_project_open', 'find_object_by_path']
     );
     expect(script).toContain('Application/MyPOU');
     expect(script).toContain('x := 42;');
+    expect(script).toContain('SET_DECLARATION = True');
+    expect(script).toContain('SET_IMPLEMENTATION = True');
+  });
+
+  it('set_pou_code with omitted declarationCode gates the replace() call', () => {
+    // Regression: when caller omits declarationCode, the script must NOT
+    // call decl_obj.replace('') -- doing so wipes the POU's
+    // PROGRAM/VAR...END_VAR block (binary becomes UNKNOWN POU).
+    // server.ts passes SET_DECLARATION='False' in that case.
+    const script = mgr.prepareScriptWithHelpers(
+      'set_pou_code',
+      {
+        PROJECT_FILE_PATH: 'C:\\test.project',
+        POU_FULL_PATH: 'Application/PLC_PRG',
+        DECLARATION_CONTENT: '',
+        IMPLEMENTATION_CONTENT: 'x := 1;',
+        SET_DECLARATION: 'False',
+        SET_IMPLEMENTATION: 'True',
+      },
+      ['ensure_project_open', 'find_object_by_path']
+    );
+    expect(script).toContain('SET_DECLARATION = False');
+    expect(script).toContain('SET_IMPLEMENTATION = True');
+    // The skip branch must be reachable
+    expect(script).toContain('SET_DECLARATION=False');
+    // No leftover {PLACEHOLDER} unsubstituted
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
   });
 
   it('check_status script has no placeholders after load', () => {
