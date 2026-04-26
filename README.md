@@ -1,39 +1,62 @@
-> ## About this fork
->
-> **Codesys-MCP-SP21+** -- a fork of [luke-harriman/Codesys-MCP](https://github.com/luke-harriman/Codesys-MCP) maintained at https://github.com/phobicdotno/Codesys-MCP-SP21-plus/tree/sp21-plus-migration-notes. Published on npm as [`codesys-mcp-sp21-plus`](https://www.npmjs.com/package/codesys-mcp-sp21-plus).
->
-> **Why fork.** Upstream's watcher relies on `system.execute_on_primary_thread()` to marshal work from a background thread back to the CODESYS UI thread. That API was **removed in CODESYS V3.5 SP21+**, so on SP21 / SP22 every tool call returned the same `Marshal error: The functionality 'system.execute_on_primary_thread(...)' is no longer supported` and the server was effectively unusable on current CODESYS releases.
->
-> **What's fixed in this fork:**
->
-> - **SP21+/SP22 compatibility** — the watcher was rewritten as single-threaded on the primary thread, yielding to the IDE via `system.delay()`. No background thread, no marshaling. Works on SP19, SP21, and SP22+. Full rationale in [`docs/MIGRATION-SP21-PLUS.md`](docs/MIGRATION-SP21-PLUS.md).
-> - **Cancel-link hardening** — the watcher now catches `KeyboardInterrupt` (which is not a subclass of `Exception` in Python) at three layers, so clicking *"Click here to CANCEL this operation"* in CODESYS no longer pops the modal traceback dialog or kills the watcher. Bumped to `WATCHER_VERSION 0.4.2`.
->
-> **Verified state of every tool** is recorded in [`docs/SMOKE-TEST-2026-04-25.md`](docs/SMOKE-TEST-2026-04-25.md): 17 of 28 invocations pass, 8 fail, 3 are partial. The failures are *upstream* bugs unrelated to the SP21+ fix (e.g. `create_folder` keyword mismatch, JSON `long` serialization in `compile_project`, online-API drift in `connect_to_device` / `write_variable`) and are tracked there for follow-up PRs.
-
 # Codesys-MCP-SP21+
 
-MCP server for CODESYS with a persistent UI instance and file-based IPC. npm package: `codesys-mcp-sp21-plus`.
+> **This is a fork.** It is **not** the upstream `luke-harriman/Codesys-MCP`.
+>
+> - **Upstream:** [luke-harriman/Codesys-MCP](https://github.com/luke-harriman/Codesys-MCP)
+> - **This fork:** [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus) — branch [`sp21-plus-migration-notes`](https://github.com/phobicdotno/Codesys-MCP-SP21-plus/tree/sp21-plus-migration-notes)
+> - **npm:** [`codesys-mcp-sp21-plus`](https://www.npmjs.com/package/codesys-mcp-sp21-plus) (published by `phobic`)
+> - **Maintainer:** Karstein Kvistad
+>
+> **Why fork.** Upstream's watcher relies on `system.execute_on_primary_thread()` to marshal work from a background thread back to the CODESYS UI thread. That API was **removed in CODESYS V3.5 SP21+**, so on SP21 / SP22 every tool call returned the same `Marshal error: The functionality 'system.execute_on_primary_thread(...)' is no longer supported` and the server was effectively unusable on current CODESYS releases. Several other upstream tools were also broken by unrelated script-engine API drift. This fork fixes all of that and adds a release pipeline on top.
 
-Unlike headless-only approaches that spawn a new CODESYS process per command, this server launches CODESYS **with its UI visible** and keeps it running. MCP tool calls are sent to the same instance via a file-based IPC watcher, so changes appear in real-time and the user can interact with the IDE alongside AI-driven automation.
+MCP server for CODESYS with a persistent UI instance and file-based IPC. Unlike headless-only approaches that spawn a new CODESYS process per command, this server launches CODESYS **with its UI visible** and keeps it running. MCP tool calls are sent to the same instance via a file-based IPC watcher, so changes appear in real-time and the user can interact with the IDE alongside AI-driven automation.
 
-## Features
+---
 
-- **Persistent mode** — CODESYS UI stays open; commands execute in the running instance
-- **Headless fallback** — automatic fallback to `--noUI` spawn-per-command if persistent mode fails
-- **File-based IPC** — proven approach using atomic file writes and a Python watcher script
-- **Command serialization** — async mutex ensures one command at a time
-- **Health monitoring** — detects CODESYS crashes and reports state
-- **37 MCP tools** — project management, POU authoring, structured compiler diagnostics, runtime monitoring, library management, version-anchor + release pipeline, CODESYS Git plugin (PDE license-gated), source-mirror export
-- **Drop-in replacement** — same MCP tool names and parameters as `@codesys/mcp-toolkit`
+## What's new in this fork
+
+### Compatibility fixes (the headline)
+
+- **SP21+/SP22 compatibility.** The watcher was rewritten as single-threaded on the primary thread, yielding to the IDE via `system.delay()`. No background thread, no marshaling. Works on SP19, SP21, and SP22+. Full rationale in [`docs/MIGRATION-SP21-PLUS.md`](docs/MIGRATION-SP21-PLUS.md).
+- **Cancel-link hardening.** The watcher now catches `KeyboardInterrupt` (which is not a subclass of `Exception` in IronPython 2.7) at three layers, so clicking *"Click here to CANCEL this operation"* in CODESYS no longer pops the modal traceback dialog or kills the watcher. `WATCHER_VERSION 0.4.2`.
+
+### Upstream tool fixes
+
+- **`create_folder`** — upstream passed `name=` as a kwarg the API doesn't accept; fixed to use positional `foldername=` with an `SV_POU` fallback for SP21+, then walks children to detect success since the API returns void.
+- **`compile_project` / `get_compile_messages`** — upstream choked on Python `long` values that `json.dumps` can't serialize on IronPython 2.7. Coerced to `int` before dumping.
+- **`connect_to_device`** — upstream used the wrong `LoginMode` signature. Fixed, plus the online tools now **auto-login** if you haven't already, instead of silently returning empty results.
+- **`ensure_project_open`** — fixed the cross-project switch path so opening a second project no longer leaves the watcher pinned to the first.
+- **`set_pou_code`** — upstream wiped the *other* half of the POU when only declaration or only implementation was passed. Now an omitted field is left intact.
+- **`add_library`** — pre-resolves via `library_manager.find_library` and prefers the managed-library overload. **Refuses to save** if the resulting reference is an unresolvable placeholder, which would otherwise brick the next project open.
+- **`list_project_libraries`** — switched to the `ScriptLibManObjectContainer` API (the previous one no longer exists), and now also captures IDE version, devices, and per-Application compiler version.
+
+### New tools (not in upstream)
+
+- **`mirror_export`** — walks the project tree and writes one `.st` file per code-bearing object into `<projectDir>/mcp-mirror/`, preserving the project tree. Read-only; foundation for source-controlled CODESYS projects.
+- **`bump_project_version`** — bumps one part of the 4-part `Project Information.Version` (major / minor / revision / build / **auto**) and maintains a `_MCP_PROJECT_VERSION` GVL inside the project so the running PLC carries its source version. `auto` mode classifies via mirror diff vs the latest `v*` git tag (deletion/rename → major; addition → minor; modification → revision; first-run → seed at 1.0.0.0). Auto-maintains `Changelog.md` alongside the bump.
+- **`release_project_version`** — one-shot release pipeline: `mirror_export` → classify → `bump_project_version` → regenerate library.md/pou-dump.md/README.md/Changelog.md → `git add` controlled paths → `git commit` → `git tag v<new>` → `git push --follow-tags`. Tag annotation embeds dual SHAs (project-sha256 + mirror-sha256) so the binary-changed-without-source-diff case still gets a build-bump with provenance.
+- **`read_running_version_online`** — reads `_MCP_PROJECT_VERSION.sVersion` from the running PLC over the CODESYS online protocol (port 11740 / gateway). Returns the live value plus a sanity check against the X.Y.Z.W shape.
+- **`git_remote_add`**, **`git_branch_set_upstream_to`**, **`git_push`** — wrappers for the CODESYS Git plugin's remote/upstream/push primitives that upstream didn't ship. `git_branch_set_upstream_to` is **mandatory before the first push to a fresh remote** — without it `git_push` fails with "branch does not track an upstream branch".
+
+### Reliability fixes
+
+- **`launcher`** refuses to spawn when a `CODESYS.exe` is already running, instead of racing into a "project is currently in use" modal.
+- **`shutdown_codesys`** kills orphan `CODESYS.exe` when the launcher has no tracked PID (e.g. after a crashed parent).
+- **`git_*`** tools now `project.save()` after every mutating op so binding/state actually persists.
+
+### Verification
+
+The verified state of every tool is recorded in [`docs/SMOKE-TEST-2026-04-25.md`](docs/SMOKE-TEST-2026-04-25.md). Open issues (mostly online-API drift) are tracked in [`docs/OPEN-BUGS-CROSS-REFERENCE.md`](docs/OPEN-BUGS-CROSS-REFERENCE.md).
+
+---
 
 ## Installation
 
-This is a Node.js MCP server published to the npm registry as **`codesys-mcp-sp21-plus`** by the fork maintainer (`phobic`). It is **this fork** — not the upstream `luke-harriman/Codesys-MCP` and not a Python package. There is no `pip install`; the `.py` files under `src/scripts/` are CODESYS IronPython templates bundled inside the npm package itself.
+This is a Node.js MCP server published to npm as **`codesys-mcp-sp21-plus`**. It is **this fork** — not the upstream `luke-harriman/Codesys-MCP` and not a Python package. There is no `pip install`; the `.py` files under `src/scripts/` are CODESYS IronPython templates bundled inside the npm package itself.
 
-**Requirements:** Node.js 18+, Windows, CODESYS 3.5 SP19, SP21 (3.5.21.x), or SP22 (3.5.22.x) installed. CODESYS Git plugin tools (`git_init`, `git_commit`, `git_push`, etc.) additionally require an active **CODESYS Professional Developer Edition** subscription license.
+**Requirements:** Node.js 18+, Windows, CODESYS 3.5 SP19, SP21 (3.5.21.x), or SP22 (3.5.22.x) installed. The CODESYS Git plugin tools (`git_init`, `git_commit`, `git_push`, etc.) additionally require an active **CODESYS Professional Developer Edition** subscription license.
 
-### Install the fork from npm
+### Install from npm (recommended)
 
 ```bash
 npm install -g codesys-mcp-sp21-plus
@@ -41,11 +64,11 @@ npm install -g codesys-mcp-sp21-plus
 
 That single command:
 
-- downloads the published tarball from https://www.npmjs.com/package/codesys-mcp-sp21-plus
+- downloads the published tarball from <https://www.npmjs.com/package/codesys-mcp-sp21-plus>
 - installs it globally (`-g`) so the `codesys-mcp-sp21-plus` binary is on your PATH (typically `%APPDATA%\npm\` on Windows)
 - pulls in its 4 dependencies (`@modelcontextprotocol/sdk`, `commander`, `uuid`, `zod`) automatically
 
-Verify the install with:
+Verify the install:
 
 ```bash
 codesys-mcp-sp21-plus --version
@@ -54,15 +77,15 @@ codesys-mcp-sp21-plus --detect       # lists installed CODESYS versions
 
 Then wire it into `.mcp.json` per [Quick Start](#quick-start) and start Claude Code.
 
-To upgrade later (after a new version is published to npm):
+To upgrade later:
 
 ```bash
 npm install -g codesys-mcp-sp21-plus@latest
 ```
 
-### Install the fork from source (development / unreleased changes)
+### Install from source (development / unreleased changes)
 
-If you want to track this fork's `sp21-plus-migration-notes` branch directly, contribute fixes, or pin to a specific commit instead of the published version, clone and link it:
+If you want to track this fork's `sp21-plus-migration-notes` branch directly, contribute fixes, or pin to a specific commit instead of the published version:
 
 ```bash
 git clone https://github.com/phobicdotno/Codesys-MCP-SP21-plus.git
@@ -179,35 +202,37 @@ Environment variables `CODESYS_PATH` and `CODESYS_PROFILE` are used as defaults 
 
 ## MCP Tools
 
+37 tools across the categories below. Tools marked **NEW** were added in this fork; tools marked **FIXED** existed upstream but were broken before this fork.
+
 ### Management Tools
 
 | Tool | Description |
 |------|-------------|
 | `launch_codesys` | Manually launch CODESYS (use with `--no-auto-launch`) |
-| `shutdown_codesys` | Shut down the persistent CODESYS instance |
+| `shutdown_codesys` | Shut down the persistent CODESYS instance (kills orphans too) |
 | `get_codesys_status` | Get current state, PID, execution mode |
 
 ### Project Tools
 
 | Tool | Description |
 |------|-------------|
-| `open_project` | Open an existing CODESYS project file |
+| `open_project` | Open an existing CODESYS project file (cross-project switch **FIXED**) |
 | `create_project` | Create a new project from the standard template |
 | `save_project` | Save the currently open project |
-| `compile_project` | Build the primary application with structured error output (120s timeout) |
-| `get_compile_messages` | Retrieve last compiler messages without triggering a new build |
+| `compile_project` | Build the primary application with structured error output (120s timeout) — JSON `long` **FIXED** |
+| `get_compile_messages` | Retrieve last compiler messages without triggering a new build — JSON `long` **FIXED** |
 
 ### POU / Code Authoring Tools
 
 | Tool | Description |
 |------|-------------|
 | `create_pou` | Create a Program, Function Block, or Function |
-| `set_pou_code` | Set declaration and/or implementation code |
+| `set_pou_code` | Set declaration and/or implementation code (omitted-field wipe **FIXED**) |
 | `create_property` | Create a property within a Function Block |
 | `create_method` | Create a method within a Function Block |
 | `create_dut` | Create a Data Unit Type (Structure, Enumeration, Union, Alias) |
 | `create_gvl` | Create a Global Variable List with optional initial declaration |
-| `create_folder` | Create an organizational folder in the project tree |
+| `create_folder` | Create an organizational folder in the project tree (**FIXED**) |
 | `delete_object` | Delete any project object (POU, DUT, GVL, folder, etc.) |
 | `rename_object` | Rename any project object |
 | `get_all_pou_code` | Bulk read all declaration and implementation code in the project (120s timeout) |
@@ -216,7 +241,7 @@ Environment variables `CODESYS_PATH` and `CODESYS_PROFILE` are used as defaults 
 
 | Tool | Description |
 |------|-------------|
-| `connect_to_device` | Login to the PLC runtime (requires configured device/gateway) |
+| `connect_to_device` | Login to the PLC runtime — `LoginMode` signature + auto-login **FIXED** |
 | `disconnect_from_device` | Logout from the PLC runtime |
 | `get_application_state` | Check if the PLC application is running, stopped, or in exception |
 | `read_variable` | Read a live variable value from the running PLC (e.g., `PLC_PRG.bMotorRunning`) |
@@ -228,24 +253,24 @@ Environment variables `CODESYS_PATH` and `CODESYS_PROFILE` are used as defaults 
 
 | Tool | Description |
 |------|-------------|
-| `list_project_libraries` | List all libraries referenced in the project with version info, plus IDE version, devices, and per-Application compiler version |
-| `add_library` | Add a library reference. Pre-resolves via `library_manager.find_library` and prefers the managed-library overload; refuses to save if the resulting reference is an unresolvable placeholder (which would brick the next project open) |
+| `list_project_libraries` | List all libraries referenced in the project with version info, plus IDE version, devices, and per-Application compiler version (**FIXED** — switched to `ScriptLibManObjectContainer`) |
+| `add_library` | Add a library reference. Pre-resolves via `library_manager.find_library` and prefers the managed-library overload; refuses to save if the resulting reference is an unresolvable placeholder (**hardened**) |
 
-### Version Anchor + Release Pipeline
+### Version Anchor + Release Pipeline (**NEW**)
 
 These tools maintain a `_MCP_PROJECT_VERSION` GVL inside the project so the running PLC carries its source version at a known address, and orchestrate the end-to-end release flow (mirror → classify → bump → regen .md → git commit + tag + push).
 
 | Tool | Description |
 |------|-------------|
-| `bump_project_version` | Bump one part of the 4-part `Project Information.Version` (major / minor / revision / build / auto) and maintain the `_MCP_PROJECT_VERSION.sVersion` GVL. `auto` mode classifies via mirror diff vs the latest `v*` git tag (deletion/rename → major; addition → minor; modification → revision; first-run → seed at 1.0.0.0) |
-| `release_project_version` | One-shot release pipeline: `mirror_export` → classify → `bump_project_version` → regenerate library.md/pou-dump.md/README.md/Changelog.md → `git add` controlled paths → `git commit` → `git tag v<new>` → `git push --follow-tags`. Tag annotation embeds dual SHAs (project-sha256 + mirror-sha256) so SHA-fallback case (c) — binary changed without source diff — gets a build-bump with provenance |
-| `read_running_version_online` | Reads `_MCP_PROJECT_VERSION.sVersion` from the running PLC over the CODESYS online protocol (port 11740 / gateway). Returns the live value plus a sanity check against the X.Y.Z.W shape. *Caveat: requires some IEC code to reference the variable so the optimizer doesn't strip it from the online symbol table — see the tool's error message for the one-line fix.* |
+| `bump_project_version` | **NEW** — Bump one part of the 4-part `Project Information.Version` (major / minor / revision / build / auto) and maintain `_MCP_PROJECT_VERSION.sVersion`. `auto` mode classifies via mirror diff vs latest `v*` git tag |
+| `release_project_version` | **NEW** — One-shot release pipeline: `mirror_export` → classify → `bump_project_version` → regenerate .md docs → `git add` → `git commit` → `git tag v<new>` → `git push --follow-tags`. Dual-SHA tag annotation |
+| `read_running_version_online` | **NEW** — Reads `_MCP_PROJECT_VERSION.sVersion` from the running PLC over the CODESYS online protocol (port 11740 / gateway). *Caveat: requires some IEC code to reference the variable so the optimizer doesn't strip it from the online symbol table — see the tool's error message for the one-line fix.* |
 
-### Source Mirror
+### Source Mirror (**NEW**)
 
 | Tool | Description |
 |------|-------------|
-| `mirror_export` | Walks the project tree and writes one `.st` file per code-bearing object into `<projectDir>/mcp-mirror/`, preserving the project tree as nested directories. Read-only (does NOT modify the CODESYS project). Companion of `release_project_version`'s classifier |
+| `mirror_export` | **NEW** — Walks the project tree and writes one `.st` file per code-bearing object into `<projectDir>/mcp-mirror/`, preserving the project tree as nested directories. Read-only. Foundation for the release pipeline classifier |
 
 ### CODESYS Git (PDE license-gated)
 
@@ -256,9 +281,9 @@ These tools wrap CODESYS's own Git plugin. **All of them require an active CODES
 | `git_init` | Initialise a Git working tree via `project.git.init()`. Dual-storage model: the `.project` stays where it is; the git repo lives in a SEPARATE directory (auto-defaults to `<basename>_git` sibling). Pass an explicit `localRepoPath` on a local drive when the project lives on a network share — UNC paths are rejected by the plugin |
 | `git_status` | Reports current branch + a probe of any status/changes/diff methods exposed on `project.git`. Read-only |
 | `git_commit` | Stages all working-tree changes and commits via `project.git.commit_complete(message, user, mail)` |
-| `git_remote_add` | Adds a named remote via `project.git.remote_add(name, url)` |
-| `git_branch_set_upstream_to` | Sets the current branch's upstream tracking ref via `project.git.branch_set_upstream_to(remoteName, branchName?)`. **Mandatory before the first push to a fresh remote** — without it, `git_push` fails with "branch does not track an upstream branch" |
-| `git_push` | Pushes the current branch via `project.git.push()`. If `username + token` are both supplied, uses the 3-arg overload `push(branch, user, SecureString(token))`; otherwise relies on cached credentials / Windows Credential Manager. **Security: when a token is supplied, it is briefly resident in the watcher's command file on disk — prefer cached credentials.** |
+| `git_remote_add` | **NEW** — Adds a named remote via `project.git.remote_add(name, url)` |
+| `git_branch_set_upstream_to` | **NEW** — Sets the current branch's upstream tracking ref. **Mandatory before the first push to a fresh remote** |
+| `git_push` | **NEW** — Pushes the current branch via `project.git.push()`. If `username + token` are both supplied, uses the 3-arg overload; otherwise relies on cached credentials / Windows Credential Manager. **Security: when a token is supplied, it is briefly resident in the watcher's command file on disk — prefer cached credentials.** |
 
 ## MCP Resources
 
@@ -270,16 +295,15 @@ These tools wrap CODESYS's own Git plugin. **All of them require an active CODES
 
 ## Execution Modes
 
-### Persistent Mode (default)
+### Persistent Mode (default, SP21+ rewrite)
 
 1. Server launches `CODESYS.exe` with `--runscript=watcher.py` (no `--noUI`)
 2. CODESYS UI opens — user can see and interact with the IDE
-3. The watcher script starts a .NET background thread that polls a `commands/` directory, then **returns control to CODESYS** so the UI stays fully responsive
+3. The watcher runs **single-threaded on the primary thread**, polling a `commands/` directory and yielding to the IDE via `system.delay()` between polls (this fork — upstream used a background thread + `system.execute_on_primary_thread()` which was removed in SP21)
 4. When a tool is called, the server writes a `.py` script + `.command.json` to `commands/`
-5. The background thread detects the command and marshals execution onto the CODESYS UI thread via `system.execute_on_primary_thread()`
-6. Results are written atomically to `results/`
-7. Changes made by tools appear in the CODESYS UI in real-time
-8. The UI remains interactive between commands — only briefly paused during synchronous API calls (compile, open)
+5. The watcher detects the command, executes it directly on the primary thread, and writes results atomically to `results/`
+6. Changes made by tools appear in the CODESYS UI in real-time
+7. The UI remains interactive between commands — only briefly paused during synchronous API calls (compile, open)
 
 ### Headless Mode
 
@@ -304,7 +328,7 @@ Verify the path with `--detect`. The executable is typically at:
 `C:\Program Files\CODESYS 3.5.XX.X\CODESYS\Common\CODESYS.exe`
 
 **Project file locked**
-Another CODESYS instance may have the project open. Close it first or use persistent mode so there's only one instance.
+Another CODESYS instance may have the project open. Close it first or use persistent mode so there's only one instance. The launcher will refuse to spawn a second `CODESYS.exe`.
 
 **Watcher timeout (persistent mode)**
 If the watcher doesn't signal ready within 60 seconds, check:
@@ -313,7 +337,7 @@ If the watcher doesn't signal ready within 60 seconds, check:
 - Try `--verbose` for detailed logging
 
 **UI briefly pauses during commands (persistent mode)**
-The watcher uses a background thread that marshals work onto the UI thread, so the UI stays responsive between commands. During synchronous CODESYS API calls (compile, project open), the UI may briefly pause — this is expected and normal. If a command hangs, check the CODESYS messages window for modal dialogs or errors.
+The watcher executes commands on the primary thread and yields between polls, so the UI stays responsive between commands. During synchronous CODESYS API calls (compile, project open), the UI may briefly pause — this is expected and normal. If a command hangs, check the CODESYS messages window for modal dialogs or errors.
 
 **Command timeout**
 Default is 60s (120s for compile and download). Increase with `--timeout <ms>`. Check CODESYS messages window for errors.
@@ -348,19 +372,24 @@ npm run test:watch
 ```
 src/
   bin.ts              CLI entry point
-  server.ts           MCP tool/resource registration (28 tools, 3 resources)
+  server.ts           MCP tool/resource registration (37 tools, 3 resources)
   launcher.ts         CODESYS process management
   ipc.ts              File-based IPC transport
   headless.ts         Headless fallback executor
   script-manager.ts   Python template loading + interpolation
   types.ts            Shared TypeScript types
   logger.ts           Structured stderr logging
-  scripts/            Python scripts (watcher + 2 helpers + 28 tool scripts)
+  scripts/            Python scripts (watcher + helpers + tool scripts)
 tests/
   unit/               Unit tests (IPC, script manager, launcher)
   integration/        Integration tests (script pipeline, manual CODESYS tests)
   mock_watcher.py     Standalone watcher for testing without CODESYS
 ```
+
+## Credits
+
+- Upstream project: [luke-harriman/Codesys-MCP](https://github.com/luke-harriman/Codesys-MCP) — original architecture, the persistent-watcher concept, and the bulk of the upstream tool set
+- This fork: [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus) — Karstein Kvistad. SP21+/SP22 watcher rewrite, upstream-tool fixes, version-anchor + release pipeline, source-mirror export, CODESYS Git push wrappers
 
 ## License
 
