@@ -13,6 +13,37 @@ MCP server for CODESYS with a persistent UI instance and file-based IPC. Unlike 
 
 ---
 
+## Quick Start
+
+Install globally from npm:
+
+```bash
+npm install -g codesys-mcp-sp21-plus
+```
+
+Add to your `.mcp.json` (Claude Code configuration) — adjust the path/profile to match your installed CODESYS version:
+
+```json
+{
+  "mcpServers": {
+    "codesys": {
+      "command": "codesys-mcp-sp21-plus",
+      "args": [
+        "--codesys-path", "C:\\Program Files\\CODESYS 3.5.22.10\\CODESYS\\Common\\CODESYS.exe",
+        "--codesys-profile", "CODESYS V3.5 SP22 Patch 1",
+        "--mode", "persistent"
+      ]
+    }
+  }
+}
+```
+
+Run `codesys-mcp-sp21-plus --detect` to print the exact path/profile values for every CODESYS install on your machine — copy from there rather than guessing.
+
+See [Installation](#installation) for source-install / upgrade / multi-install setups.
+
+---
+
 ## What's new in this fork
 
 ### Compatibility fixes (the headline)
@@ -117,26 +148,9 @@ If you'd rather avoid touching the global node_modules, skip `npm link` and refe
 }
 ```
 
-## Quick Start
+## Run without `.mcp.json`
 
-Add to your `.mcp.json` (Claude Code configuration):
-
-```json
-{
-  "mcpServers": {
-    "codesys": {
-      "command": "codesys-mcp-sp21-plus",
-      "args": [
-        "--codesys-path", "C:\\Program Files\\CODESYS 3.5.22.10\\CODESYS\\Common\\CODESYS.exe",
-        "--codesys-profile", "CODESYS V3.5 SP22 Patch 1",
-        "--mode", "persistent"
-      ]
-    }
-  }
-}
-```
-
-Or run directly:
+You can also invoke the binary directly from a shell (useful for one-off testing or wrapping in another launcher):
 
 ```bash
 codesys-mcp-sp21-plus \
@@ -144,7 +158,7 @@ codesys-mcp-sp21-plus \
   --codesys-profile "CODESYS V3.5 SP22 Patch 1"
 ```
 
-### Multiple CODESYS installations
+## Multiple CODESYS installations
 
 The MCP server is bound to a **single** `--codesys-path` / `--codesys-profile` at startup. `launch_codesys` takes no parameters — it just starts whichever CODESYS the server was configured against. If you have several CODESYS versions installed and want to drive them all from the same Claude Code session, register **one MCP server entry per install** with a distinct name.
 
