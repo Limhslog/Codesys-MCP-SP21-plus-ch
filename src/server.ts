@@ -5,6 +5,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -126,6 +127,93 @@ function parseBumpedVersion(output: string): { from: string | null; to: string |
   const a = /Runtime anchor:\s*_MCP_PROJECT_VERSION\.sVersion\s*:=\s*'([^']+)'/.exec(output);
   if (a) return { from: null, to: a[1] };
   return { from: null, to: null };
+}
+
+/**
+ * Compute SHA-256 of a single file's contents. Returns the lowercase hex
+ * digest. Used to detect "did the .project binary change?" between releases
+ * -- catches changes that don't show up in the textual mirror_export output
+ * (device tree, library refs, task config, visualizations, etc.).
+ */
+function sha256OfFile(filePath: string): string {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
+
+/**
+ * Compute a deterministic SHA-256 over a directory tree. Walks all regular
+ * files in sorted order, hashing each (relative-path, content) pair so the
+ * output is stable across machines and depends only on the tree's logical
+ * content.
+ *
+ * Used to detect "did the user edit the mcp-mirror tree directly?" between
+ * release calls. The mirror is normally a one-way export from the .project
+ * binary, but a curious user can edit a .st file with a text editor; we
+ * want to surface that case rather than silently overwriting their work
+ * on the next mirror_export.
+ *
+ * Returns empty string if the directory doesn't exist.
+ */
+function sha256OfDirectory(dirPath: string): string {
+  if (!fs.existsSync(dirPath)) return '';
+  const hash = crypto.createHash('sha256');
+  const baseLen = dirPath.length + 1;
+  function walk(dir: string): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(full);
+      } else if (e.isFile()) {
+        const rel = full.slice(baseLen).replace(/\\/g, '/');
+        hash.update(rel);
+        hash.update('\0');
+        try {
+          hash.update(fs.readFileSync(full));
+        } catch {
+          // skip unreadable files; their absence still alters the hash
+          // because subsequent entries continue to feed it
+        }
+        hash.update('\0');
+      }
+    }
+  }
+  walk(dirPath);
+  return hash.digest('hex');
+}
+
+/**
+ * Read the SHA-256 fingerprints stored in an annotated git tag's body.
+ * release_project_version writes both `project-sha256:` and `mirror-sha256:`
+ * lines into each release tag, so the next release can compare against
+ * them and detect even non-textual changes.
+ *
+ * Returns undefined for either field if the tag body doesn't carry it
+ * (older tags, lightweight tags, missing-tag failure).
+ */
+function readTagShas(projectDir: string, tagName: string): { project?: string; mirror?: string } {
+  if (!tagName) return {};
+  let body = '';
+  try {
+    body = execSync(`git -C "${projectDir}" cat-file -p ${tagName}`, {
+      encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return {};
+  }
+  const projMatch = body.match(/^project-sha256:\s*([0-9a-f]{64})\s*$/m);
+  const mirMatch = body.match(/^mirror-sha256:\s*([0-9a-f]{64})\s*$/m);
+  return {
+    project: projMatch ? projMatch[1] : undefined,
+    mirror: mirMatch ? mirMatch[1] : undefined,
+  };
 }
 
 /**
@@ -1816,6 +1904,49 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
       const doPush = args.push !== false;
       const log: string[] = [];
 
+      // 0. SHA fingerprints (BEFORE mirror_export overwrites the mirror).
+      // Two SHAs tracked per release in the v* tag's annotated body:
+      //   - project-sha256 = sha of the .project binary
+      //   - mirror-sha256  = sha of the mcp-mirror/ tree (sorted file walk)
+      // Comparing the current SHAs against the latest tag's stored SHAs lets
+      // us detect three classes of change:
+      //   (a) binary changed AND mirror unchanged (working tree, before re-export)
+      //       -> normal "user edited via IDE" path; classifier handles it.
+      //   (b) binary unchanged AND mirror changed (working tree, before re-export)
+      //       -> user edited mirror files DIRECTLY (text editor on .st files).
+      //          The mirror_export below is about to overwrite those edits.
+      //          Surface a WARNING so it's at least visible in the log.
+      //          (Future: a mirror_import tool could push these back into the
+      //          binary; until then, mirror is one-way.)
+      //   (c) binary changed AND mirror UNCHANGED *after* re-export
+      //       -> non-textual binary change (device tree / library refs / task
+      //          config / visu / Save() touch). Classifier sees no diff but
+      //          binary SHA flipped. Classify as build-level bump so the
+      //          version still ticks and the change isn't silently dropped.
+      const mirrorDir = path.join(projectDir, 'mcp-mirror');
+      const projectShaNow = (() => {
+        try { return sha256OfFile(escaped); } catch { return ''; }
+      })();
+      const mirrorShaBeforeExport = sha256OfDirectory(mirrorDir);
+      let priorTag = '';
+      try {
+        priorTag = execSync(
+          `git -C "${projectDir}" describe --tags --abbrev=0 --match "v*"`,
+          { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+        ).trim();
+      } catch { /* first-run; no prior tag */ }
+      const priorShas = readTagShas(projectDir, priorTag);
+      if (priorTag) {
+        log.push(`prior tag: ${priorTag} (project-sha256: ${priorShas.project ? priorShas.project.slice(0, 12) + '...' : '(none)'}, mirror-sha256: ${priorShas.mirror ? priorShas.mirror.slice(0, 12) + '...' : '(none)'})`);
+      }
+      // (b) detection: mirror was edited directly while binary stood still.
+      const mirrorEditedDirectly =
+        priorShas.mirror !== undefined &&
+        mirrorShaBeforeExport !== '' &&
+        mirrorShaBeforeExport !== priorShas.mirror &&
+        priorShas.project !== undefined &&
+        projectShaNow === priorShas.project;
+
       // 1. Mirror export
       const mirrorScript = scriptManager.prepareScriptWithHelpers(
         'mirror_export',
@@ -1827,20 +1958,35 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         return formatToolResponse(mirrorRes, 'release_project_version: mirror_export failed');
       }
       log.push('mirror_export: OK');
+      if (mirrorEditedDirectly) {
+        log.push('WARNING: mcp-mirror/ tree differed from the last tag\'s mirror-sha256 BEFORE mirror_export ran, while the .project binary did not change. This usually means you edited .st files in the mirror directly. mirror_export has now overwritten those edits with the current binary state. (mirror_import is not yet implemented; for now, make code changes via the IDE or set_pou_code so they reach the binary first.)');
+      }
 
       // 2. Classify mirror diff vs latest v* tag
-      const classification = classifyMcpMirrorChanges(projectDir);
+      let classification = classifyMcpMirrorChanges(projectDir);
+      // SHA fallback (case c): mirror diff is empty but the project binary
+      // SHA changed. Promote a 'no-changes' classification to a build-level
+      // bump so non-textual changes still tick the version.
+      let shaPromotedToBuild = false;
+      if (classification.kind === 'no-changes' && priorShas.project !== undefined && projectShaNow !== priorShas.project) {
+        shaPromotedToBuild = true;
+        const evidence = [
+          ...classification.evidence,
+          `binary .project SHA changed (${priorShas.project.slice(0, 12)}... -> ${projectShaNow.slice(0, 12)}...) but no mirror diff: likely device-tree / library refs / task config / visu / Save() touch -- classifying as build bump`,
+        ];
+        classification = { kind: 'bump', level: 'build', evidence };
+      }
       if (classification.kind === 'no-changes') {
         return {
           content: [{ type: 'text' as const, text:
-            'release_project_version: no version change -- mcp-mirror/ matches latest v* tag.\n\n' +
+            'release_project_version: no version change -- mcp-mirror/ matches latest v* tag and project-sha256 is unchanged.\n\n' +
             classification.evidence.map((e) => `  - ${e}`).join('\n')
           }],
           isError: false,
         };
       }
       const resolvedLevel = classification.kind === 'first-run' ? 'build' : classification.level;
-      const levelLabel = classification.kind === 'first-run' ? 'seed' : `auto: ${resolvedLevel}`;
+      const levelLabel = classification.kind === 'first-run' ? 'seed' : `auto: ${resolvedLevel}${shaPromotedToBuild ? ' (sha-fallback)' : ''}`;
       log.push(`classifier: ${levelLabel} (${classification.evidence.length} evidence item(s))`);
 
       // 3. Bump
@@ -2025,8 +2171,25 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         const summary = classification.evidence.slice(0, 5).join('; ').slice(0, 200);
         const commitMsg = `release v${newVersion} (${levelLabel})\n\n${summary}\n`;
         execSync(`git -C "${projectDir}" commit -m ${JSON.stringify(commitMsg)}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
-        execSync(`git -C "${projectDir}" tag -a v${newVersion} -m ${JSON.stringify(`v${newVersion} (${levelLabel})`)}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
-        log.push(`git: committed + tagged v${newVersion}`);
+
+        // Compute the post-commit SHAs and embed them in the annotated tag.
+        // These represent the state at this released version: any future
+        // release_project_version call reads them via readTagShas() to
+        // detect whether the .project binary or the mirror tree has changed
+        // since this release. The post-bump mirror_export at step 3b
+        // refreshed the mirror to match the new GVL value, and the bump
+        // saved the binary; both reads here should reflect the v<new>
+        // post-bump state.
+        const newProjectSha = (() => {
+          try { return sha256OfFile(escaped); } catch { return ''; }
+        })();
+        const newMirrorSha = sha256OfDirectory(mirrorDir);
+        const tagBody =
+          `v${newVersion} (${levelLabel})\n\n` +
+          `project-sha256: ${newProjectSha}\n` +
+          `mirror-sha256: ${newMirrorSha}\n`;
+        execSync(`git -C "${projectDir}" tag -a v${newVersion} -m ${JSON.stringify(tagBody)}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+        log.push(`git: committed + tagged v${newVersion} (project-sha256: ${newProjectSha.slice(0, 12)}..., mirror-sha256: ${newMirrorSha.slice(0, 12)}...)`);
 
         if (doPush) {
           execSync(`git -C "${projectDir}" push --follow-tags`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
