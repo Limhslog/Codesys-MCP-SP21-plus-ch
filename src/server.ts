@@ -1859,6 +1859,73 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
       }
       log.push(`bump: ${from ?? '(none)'} -> ${newVersion}`);
 
+      // 3a. SANITY CHECK: the new version MUST be strictly greater than the
+      // latest v* tag. Defensive guard against silent version regressions
+      // caused by stale in-memory CODESYS state.
+      //
+      // The version values consumed by bump_project_version (Project
+      // Information.Version and _MCP_PROJECT_VERSION.sVersion) are read from
+      // CODESYS's in-memory project tree, NOT directly from the .project
+      // binary on disk. If the IDE has a stale tree from a prior session, the
+      // script's pi-vs-GVL cross-check fix can be defeated -- both sides come
+      // from the same stale source. Two observed regressions on the MCPTest2
+      // sandbox were undetected by the in-script check:
+      //   - 2026-04-26 v1.0.4.0 (script saw 1.0.3.0, on-disk was 1.2.0.0)
+      //   - 2026-04-26 v1.1.0.0 (script saw 1.0.0.0, on-disk was 1.2.1.0)
+      // In both cases the orchestrator went on to call git tag, which
+      // either failed (tag exists) or wrote a wrong-direction tag.
+      //
+      // This guard catches *any* cause of misread (in-memory drift, regex
+      // edge case, future fork bug we haven't seen yet) at the orchestrator
+      // boundary, before any git commit / tag / push lands. The .project
+      // binary on disk has already been written with the bad value at this
+      // point -- recovery is a manual step (shutdown + relaunch + retry, or
+      // explicit bump_project_version calls until > tag), but no permanent
+      // damage was published.
+      let latestTag = '';
+      try {
+        latestTag = execSync(
+          `git -C "${projectDir}" describe --tags --abbrev=0 --match "v*"`,
+          { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+        ).trim();
+      } catch {
+        // No prior v* tag -- true first-run; skip the check.
+      }
+      if (latestTag) {
+        const tagV = latestTag.replace(/^v/, '');
+        const cmpVersion = (a: string, b: string): number => {
+          const A = a.split('.').map((n) => parseInt(n, 10) || 0);
+          const B = b.split('.').map((n) => parseInt(n, 10) || 0);
+          while (A.length < 4) A.push(0);
+          while (B.length < 4) B.push(0);
+          for (let i = 0; i < 4; i++) {
+            if (A[i] !== B[i]) return A[i] - B[i];
+          }
+          return 0;
+        };
+        if (cmpVersion(newVersion, tagV) <= 0) {
+          return {
+            content: [{ type: 'text' as const, text:
+              `release_project_version: SANITY CHECK FAILED -- new version ${newVersion} is not greater than the latest v* tag (${latestTag}).\n\n` +
+              `This usually means CODESYS's in-memory project tree was stale when bump_project_version ran -- the version values read by the script (Project Information.Version and/or _MCP_PROJECT_VERSION.sVersion) reflect a prior session's state, not the on-disk binary. The bump computed a value that would silently regress the version sequence.\n\n` +
+              `The .project binary on disk has been saved with the regressed value (${newVersion}) -- to recover:\n` +
+              `  1. shutdown_codesys -- clears the stale in-memory tree.\n` +
+              `  2. launch_codesys + open_project -- reload the binary fresh from disk.\n` +
+              `  3. Re-run release_project_version -- bump_project_version will now see the correct on-disk values.\n` +
+              `  4. If the issue persists after a fresh open, the binary itself has the wrong value (the recovery from a previous failed run wrote it). Run bump_project_version with explicit level=minor (or major/revision per your taste) repeatedly until the version exceeds ${tagV}, then re-run release_project_version.\n\n` +
+              `Pipeline state at abort:\n` +
+              log.map((l) => `  ${l}`).join('\n') + '\n' +
+              `  bump (rejected): ${from ?? '(none)'} -> ${newVersion}  (must be > ${tagV})\n\n` +
+              `No commit / no tag / no push made. Mirror, library.md, pou-dump.md, README.md, Changelog.md were NOT regenerated for the rejected version.`
+            }],
+            isError: true,
+          };
+        }
+        log.push(`sanity check: ${newVersion} > ${tagV} (latest tag) -- OK`);
+      } else {
+        log.push('sanity check: skipped (no v* tag baseline)');
+      }
+
       // 3b. Re-run mirror_export AFTER the bump. The pre-bump mirror
       // captured the old _MCP_PROJECT_VERSION.sVersion value and (when
       // applicable) the old Project Information.Version. After the bump,
