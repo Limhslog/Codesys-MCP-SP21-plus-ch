@@ -3,7 +3,7 @@
 > **This is a fork.** It is **not** the upstream `luke-harriman/Codesys-MCP`.
 >
 > - **Upstream:** [luke-harriman/Codesys-MCP](https://github.com/luke-harriman/Codesys-MCP)
-> - **This fork:** [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus) — branch [`sp21-plus-migration-notes`](https://github.com/phobicdotno/Codesys-MCP-SP21-plus/tree/sp21-plus-migration-notes)
+> - **This fork:** [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus)
 > - **npm:** [`codesys-mcp-sp21-plus`](https://www.npmjs.com/package/codesys-mcp-sp21-plus) (published by `phobic`)
 > - **Maintainer:** Karstein Kvistad
 >
@@ -85,7 +85,7 @@ npm install -g codesys-mcp-sp21-plus@latest
 
 ### Install from source (development / unreleased changes)
 
-If you want to track this fork's `sp21-plus-migration-notes` branch directly, contribute fixes, or pin to a specific commit instead of the published version:
+If you want to track the fork's `main` branch directly, contribute fixes, or pin to a specific commit instead of the published version:
 
 ```bash
 git clone https://github.com/phobicdotno/Codesys-MCP-SP21-plus.git
