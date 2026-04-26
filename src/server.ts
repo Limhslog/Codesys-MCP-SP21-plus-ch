@@ -5,6 +5,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -208,8 +209,17 @@ function readTagShas(projectDir: string, tagName: string): { project?: string; m
   } catch {
     return {};
   }
-  const projMatch = body.match(/^project-sha256:\s*([0-9a-f]{64})\s*$/m);
-  const mirMatch = body.match(/^mirror-sha256:\s*([0-9a-f]{64})\s*$/m);
+  // Some early SHA-tracking tags (v1.3.2.0 onward) were written via
+  // `git tag -m` with JSON.stringify(body) which escaped newlines as
+  // literal "\n" two-char sequences instead of real LF bytes -- the
+  // regex below requires real line starts (multiline mode), so handle
+  // both forms by normalising the literal sequence to a real newline
+  // before matching. Future tags written via `git tag -F <tempfile>`
+  // preserve real newlines and need no normalisation; this fallback
+  // is just for backward compatibility with the early tags.
+  const normalized = body.replace(/\\n/g, '\n');
+  const projMatch = normalized.match(/^project-sha256:\s*([0-9a-f]{64})\s*$/m);
+  const mirMatch = normalized.match(/^mirror-sha256:\s*([0-9a-f]{64})\s*$/m);
   return {
     project: projMatch ? projMatch[1] : undefined,
     mirror: mirMatch ? mirMatch[1] : undefined,
@@ -2188,7 +2198,17 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
           `v${newVersion} (${levelLabel})\n\n` +
           `project-sha256: ${newProjectSha}\n` +
           `mirror-sha256: ${newMirrorSha}\n`;
-        execSync(`git -C "${projectDir}" tag -a v${newVersion} -m ${JSON.stringify(tagBody)}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+        // Write the tag body via -F <tempfile> so real LF newlines are
+        // preserved verbatim. Earlier versions used `-m JSON.stringify(body)`
+        // which the shell passed through with literal "\n" sequences,
+        // breaking the multiline regex in readTagShas() on the read side.
+        const tagBodyFile = path.join(os.tmpdir(), `codesys-mcp-tagbody-${Date.now()}-${Math.random().toString(36).slice(2, 9)}.txt`);
+        fs.writeFileSync(tagBodyFile, tagBody, 'utf-8');
+        try {
+          execSync(`git -C "${projectDir}" tag -a v${newVersion} -F "${tagBodyFile}" --cleanup=verbatim`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+        } finally {
+          try { fs.unlinkSync(tagBodyFile); } catch { /* best-effort cleanup */ }
+        }
         log.push(`git: committed + tagged v${newVersion} (project-sha256: ${newProjectSha.slice(0, 12)}..., mirror-sha256: ${newMirrorSha.slice(0, 12)}...)`);
 
         if (doPush) {
