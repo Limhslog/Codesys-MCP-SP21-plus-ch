@@ -1,6 +1,6 @@
 > ## About this fork
 >
-> **Codesys-MCP-SP22+** -- a fork of [luke-harriman/Codesys-MCP](https://github.com/luke-harriman/Codesys-MCP) maintained at [phobicdotno/Codesys-MCP-SP22-plus](https://github.com/phobicdotno/Codesys-MCP-SP22-plus) on branch `sp21-plus-migration-notes`.
+> **Codesys-MCP-SP21+** -- a fork of [luke-harriman/Codesys-MCP](https://github.com/luke-harriman/Codesys-MCP) maintained at [phobicdotno/Codesys-MCP-SP21-plus](https://github.com/phobicdotno/Codesys-MCP-SP21-plus) on branch `sp21-plus-migration-notes`.
 >
 > **Why fork.** Upstream's watcher relies on `system.execute_on_primary_thread()` to marshal work from a background thread back to the CODESYS UI thread. That API was **removed in CODESYS V3.5 SP21+**, so on SP21 / SP22 every tool call returned the same `Marshal error: The functionality 'system.execute_on_primary_thread(...)' is no longer supported` and the server was effectively unusable on current CODESYS releases.
 >
@@ -11,9 +11,9 @@
 >
 > **Verified state of every tool** is recorded in [`docs/SMOKE-TEST-2026-04-25.md`](docs/SMOKE-TEST-2026-04-25.md): 17 of 28 invocations pass, 8 fail, 3 are partial. The failures are *upstream* bugs unrelated to the SP21+ fix (e.g. `create_folder` keyword mismatch, JSON `long` serialization in `compile_project`, online-API drift in `connect_to_device` / `write_variable`) and are tracked there for follow-up PRs.
 
-# Codesys-MCP-SP22+
+# Codesys-MCP-SP21+
 
-MCP server for CODESYS with a persistent UI instance and file-based IPC. npm package: `codesys-mcp-sp22-plus`.
+MCP server for CODESYS with a persistent UI instance and file-based IPC. npm package: `codesys-mcp-sp21-plus`.
 
 Unlike headless-only approaches that spawn a new CODESYS process per command, this server launches CODESYS **with its UI visible** and keeps it running. MCP tool calls are sent to the same instance via a file-based IPC watcher, so changes appear in real-time and the user can interact with the IDE alongside AI-driven automation.
 
@@ -24,20 +24,20 @@ Unlike headless-only approaches that spawn a new CODESYS process per command, th
 - **File-based IPC** — proven approach using atomic file writes and a Python watcher script
 - **Command serialization** — async mutex ensures one command at a time
 - **Health monitoring** — detects CODESYS crashes and reports state
-- **28 MCP tools** — project management, POU authoring, structured compiler diagnostics, runtime monitoring, library management
+- **37 MCP tools** — project management, POU authoring, structured compiler diagnostics, runtime monitoring, library management, version-anchor + release pipeline, CODESYS Git plugin (PDE license-gated), source-mirror export
 - **Drop-in replacement** — same MCP tool names and parameters as `@codesys/mcp-toolkit`
 
 ## Installation
 
 ```bash
-npm install -g codesys-mcp-sp22-plus
+npm install -g codesys-mcp-sp21-plus
 ```
 
 Or install from the repository:
 
 ```bash
-git clone https://github.com/phobicdotno/Codesys-MCP-SP22-plus.git
-cd Codesys-MCP-SP22-plus
+git clone https://github.com/phobicdotno/Codesys-MCP-SP21-plus.git
+cd Codesys-MCP-SP21-plus
 npm install
 npm run build
 npm link
@@ -53,10 +53,10 @@ Add to your `.mcp.json` (Claude Code configuration):
 {
   "mcpServers": {
     "codesys": {
-      "command": "codesys-mcp-sp22-plus",
+      "command": "codesys-mcp-sp21-plus",
       "args": [
-        "--codesys-path", "C:\\Program Files\\CODESYS 3.5.21.0\\CODESYS\\Common\\CODESYS.exe",
-        "--codesys-profile", "CODESYS V3.5 SP21 Patch 3",
+        "--codesys-path", "C:\\Program Files\\CODESYS 3.5.22.10\\CODESYS\\Common\\CODESYS.exe",
+        "--codesys-profile", "CODESYS V3.5 SP22 Patch 1",
         "--mode", "persistent"
       ]
     }
@@ -67,10 +67,46 @@ Add to your `.mcp.json` (Claude Code configuration):
 Or run directly:
 
 ```bash
-codesys-mcp-sp22-plus \
-  --codesys-path "C:\Program Files\CODESYS 3.5.21.0\CODESYS\Common\CODESYS.exe" \
-  --codesys-profile "CODESYS V3.5 SP21 Patch 3"
+codesys-mcp-sp21-plus \
+  --codesys-path "C:\Program Files\CODESYS 3.5.22.10\CODESYS\Common\CODESYS.exe" \
+  --codesys-profile "CODESYS V3.5 SP22 Patch 1"
 ```
+
+### Multiple CODESYS installations
+
+The MCP server is bound to a **single** `--codesys-path` / `--codesys-profile` at startup. `launch_codesys` takes no parameters — it just starts whichever CODESYS the server was configured against. If you have several CODESYS versions installed and want to drive them all from the same Claude Code session, register **one MCP server entry per install** with a distinct name.
+
+Both blocks below live in the same `.mcp.json`. Claude can call either by name (`codesys-21` / `codesys-22`) and the two run as independent processes with independent CODESYS instances:
+
+```json
+{
+  "mcpServers": {
+    "codesys-21": {
+      "command": "codesys-mcp-sp21-plus",
+      "args": [
+        "--codesys-path", "C:\\Program Files\\CODESYS 3.5.21.50\\CODESYS\\Common\\CODESYS.exe",
+        "--codesys-profile", "CODESYS V3.5 SP21 Patch 5",
+        "--mode", "persistent"
+      ]
+    },
+    "codesys-22": {
+      "command": "codesys-mcp-sp21-plus",
+      "args": [
+        "--codesys-path", "C:\\Program Files\\CODESYS 3.5.22.10\\CODESYS\\Common\\CODESYS.exe",
+        "--codesys-profile", "CODESYS V3.5 SP22 Patch 1",
+        "--mode", "persistent"
+      ]
+    }
+  }
+}
+```
+
+Notes:
+
+- The version numbers (`3.5.21.50`, `3.5.22.10`) match the install directory names under `C:\Program Files\` — these are the actual install IDs CODESYS uses, not the marketing names. The marketing name lives in `--codesys-profile` (e.g., `CODESYS V3.5 SP21 Patch 5`, `CODESYS V3.5 SP22 Patch 1`).
+- Run `codesys-mcp-sp21-plus --detect` once to print every CODESYS install the server can see, with its profile name; copy the values from there into `.mcp.json` rather than guessing.
+- Each server entry spawns its own CODESYS process when first invoked. Don't call `launch_codesys` on both at the same time pointing at projects that overlap — two CODESYS instances racing on the same `.project` file pop a "project is currently in use" modal that blocks every subsequent script.
+- Adding or removing an entry requires a Claude Code restart (the MCP client only reads `.mcp.json` at startup).
 
 ## CLI Reference
 
@@ -143,8 +179,37 @@ Environment variables `CODESYS_PATH` and `CODESYS_PROFILE` are used as defaults 
 
 | Tool | Description |
 |------|-------------|
-| `list_project_libraries` | List all libraries referenced in the project with version info |
-| `add_library` | Add a library reference to the project |
+| `list_project_libraries` | List all libraries referenced in the project with version info, plus IDE version, devices, and per-Application compiler version |
+| `add_library` | Add a library reference. Pre-resolves via `library_manager.find_library` and prefers the managed-library overload; refuses to save if the resulting reference is an unresolvable placeholder (which would brick the next project open) |
+
+### Version Anchor + Release Pipeline
+
+These tools maintain a `_MCP_PROJECT_VERSION` GVL inside the project so the running PLC carries its source version at a known address, and orchestrate the end-to-end release flow (mirror → classify → bump → regen .md → git commit + tag + push).
+
+| Tool | Description |
+|------|-------------|
+| `bump_project_version` | Bump one part of the 4-part `Project Information.Version` (major / minor / revision / build / auto) and maintain the `_MCP_PROJECT_VERSION.sVersion` GVL. `auto` mode classifies via mirror diff vs the latest `v*` git tag (deletion/rename → major; addition → minor; modification → revision; first-run → seed at 1.0.0.0) |
+| `release_project_version` | One-shot release pipeline: `mirror_export` → classify → `bump_project_version` → regenerate library.md/pou-dump.md/README.md/Changelog.md → `git add` controlled paths → `git commit` → `git tag v<new>` → `git push --follow-tags`. Tag annotation embeds dual SHAs (project-sha256 + mirror-sha256) so SHA-fallback case (c) — binary changed without source diff — gets a build-bump with provenance |
+| `read_running_version_online` | Reads `_MCP_PROJECT_VERSION.sVersion` from the running PLC over the CODESYS online protocol (port 11740 / gateway). Returns the live value plus a sanity check against the X.Y.Z.W shape. *Caveat: requires some IEC code to reference the variable so the optimizer doesn't strip it from the online symbol table — see the tool's error message for the one-line fix.* |
+
+### Source Mirror
+
+| Tool | Description |
+|------|-------------|
+| `mirror_export` | Walks the project tree and writes one `.st` file per code-bearing object into `<projectDir>/mcp-mirror/`, preserving the project tree as nested directories. Read-only (does NOT modify the CODESYS project). Companion of `release_project_version`'s classifier |
+
+### CODESYS Git (PDE license-gated)
+
+These tools wrap CODESYS's own Git plugin. **All of them require an active CODESYS Professional Developer Edition subscription license** — without it, the runtime's `HasGitLicense` rule fails fast with a clear PDE-required message. Distinct from the orchestration-level git operations baked into `release_project_version` (which use the system `git` binary and don't need PDE).
+
+| Tool | Description |
+|------|-------------|
+| `git_init` | Initialise a Git working tree via `project.git.init()`. Dual-storage model: the `.project` stays where it is; the git repo lives in a SEPARATE directory (auto-defaults to `<basename>_git` sibling). Pass an explicit `localRepoPath` on a local drive when the project lives on a network share — UNC paths are rejected by the plugin |
+| `git_status` | Reports current branch + a probe of any status/changes/diff methods exposed on `project.git`. Read-only |
+| `git_commit` | Stages all working-tree changes and commits via `project.git.commit_complete(message, user, mail)` |
+| `git_remote_add` | Adds a named remote via `project.git.remote_add(name, url)` |
+| `git_branch_set_upstream_to` | Sets the current branch's upstream tracking ref via `project.git.branch_set_upstream_to(remoteName, branchName?)`. **Mandatory before the first push to a fresh remote** — without it, `git_push` fails with "branch does not track an upstream branch" |
+| `git_push` | Pushes the current branch via `project.git.push()`. If `username + token` are both supplied, uses the 3-arg overload `push(branch, user, SecureString(token))`; otherwise relies on cached credentials / Windows Credential Manager. **Security: when a token is supplied, it is briefly resident in the watcher's command file on disk — prefer cached credentials.** |
 
 ## MCP Resources
 
@@ -178,7 +243,7 @@ Falls back to the original approach: each tool call spawns a new CODESYS process
 ## Detect Installed Versions
 
 ```bash
-codesys-mcp-sp22-plus --detect
+codesys-mcp-sp21-plus --detect
 ```
 
 Scans `Program Files` and `Program Files (x86)` for CODESYS installations.

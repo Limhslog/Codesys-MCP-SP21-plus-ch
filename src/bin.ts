@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CLI entry point for codesys-mcp-sp22-plus (Codesys-MCP-SP22+).
+ * CLI entry point for codesys-mcp-sp21-plus (Codesys-MCP-SP21+).
  */
 
 import { program } from 'commander';
@@ -17,7 +17,7 @@ try {
 }
 
 program
-  .name('codesys-mcp-sp22-plus')
+  .name('codesys-mcp-sp21-plus')
   .description('MCP server for CODESYS with persistent UI instance')
   .version(version)
   .option(
