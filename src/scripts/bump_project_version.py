@@ -221,7 +221,40 @@ try:
         if before_raw:
             print("DEBUG: Project Information missing, resuming from GVL: %s" % before_raw)
     else:
-        before_raw = pi.version
+        # Cross-check pi.version against the runtime-anchor GVL and take the
+        # max of the two as the resume point. Drift between the two sides
+        # happens when a release is finished by an external (non-MCP) script
+        # that updates one but not the other -- the GVL gets refreshed via
+        # inject-once writes, and pi.version gets refreshed via direct .project
+        # binary edits, but a script that touches only one leaves the other
+        # stale. Without the cross-check, the next bump would silently regress
+        # the version (observed: pi.version stuck at 1.0.0.0 while GVL was at
+        # 1.2.1.0 -> minor bump gave 1.1.0.0, colliding with an existing tag).
+        # Taking the max is always safe: the GVL only ever moves forward (set
+        # by maintain_version_gvl on every bump), and pi.version only ever
+        # moves forward (set by pi.version assignment). The higher of the
+        # two is the true latest version regardless of which side drifted.
+        pi_raw = pi.version
+        gvl_raw = read_version_from_gvl(primary_project)
+        pi_parts = parse_version(pi_raw) if pi_raw is not None else (0, 0, 0, 0)
+        gvl_parts = parse_version(gvl_raw) if gvl_raw else (0, 0, 0, 0)
+        if pi_parts >= gvl_parts:
+            before_raw = pi_raw
+        else:
+            print("WARNING: Project Information.Version (%s) is BEHIND the runtime anchor "
+                  "GVL (%s) -- this happens when a previous release was finished by an "
+                  "external script that updated the GVL but not the .project metadata. "
+                  "Using the GVL value as the resume point so the bump doesn't regress." % (
+                      pi_raw, gvl_raw))
+            before_raw = gvl_raw
+            # Heal pi.version forward to the GVL value before the bump so this
+            # warning doesn't recur on the next call.
+            try:
+                pi.version = gvl_raw
+                print("DEBUG: healed Project Information.Version: %s -> %s (matching GVL)" % (
+                    pi_raw, gvl_raw))
+            except Exception as heal_e:
+                print("WARNING: could not heal Project Information.Version: %s" % heal_e)
     before_str = str(before_raw) if before_raw is not None else None
 
     # First-run convention: if no version is set yet, seed at 1.0.0.0 instead
