@@ -68,6 +68,32 @@ See [Installation](#installation) for source-install / upgrade / multi-install s
 
 ---
 
+## Live source-control diff (`--auto-mirror`)
+
+When `--auto-mirror` is added to the server args, every successful modifying tool call (`set_pou_code`, `create_pou`, `rename_object`, `add_library`, ...) is followed by an automatic `mirror_export`. The textual `<projectDir>/mcp-mirror/` tree is refreshed on disk in lock-step with the binary `.project`, so an external editor watching the folder sees the change immediately. The first refresh on a given project also fires `code --add <mirrorDir>` once, which appends the mirror folder to your active VSCode window so the diff shows up in the Source Control panel.
+
+Enable it by adding the flag to the relevant entry's `args` in `.mcp.json`:
+
+```jsonc
+"args": [
+  "--codesys-path", "...",
+  "--codesys-profile", "...",
+  "--mode", "persistent",
+  "--auto-mirror"
+]
+```
+
+Recommended one-time setup so the Source Control panel has a baseline to diff against:
+
+```bash
+cd <projectDir>/mcp-mirror
+git init && git add -A && git commit -m "baseline"
+```
+
+After that, watch VSCode's Source Control panel as Claude edits — every tool call shows up as a real diff. The VSCode hook is best-effort: if the `code` CLI shim isn't on the standard path, the mirror still refreshes silently and the response carries an `(auto-mirror: refreshed)` hint instead of opening a window.
+
+---
+
 ## What's new in this fork
 
 ### Compatibility fixes (the headline)

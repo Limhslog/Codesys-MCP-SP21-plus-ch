@@ -839,7 +839,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         'open_project', { PROJECT_FILE_PATH: escaped }, ['ensure_project_open']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(result, `Project opened: ${args.filePath}`);
+      return await formatModifyingResponse(result, `Project opened: ${args.filePath}`, escaped, mirrorCtx);
     }
   );
 
@@ -886,7 +886,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         TEMPLATE_PROJECT_PATH: templatePath,
       });
       const result = await executor.executeScript(script);
-      return formatToolResponse(result, `Project created from template: ${absPath}`);
+      return await formatModifyingResponse(result, `Project created from template: ${absPath}`, absPath, mirrorCtx);
     }
   );
 
@@ -902,7 +902,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         'save_project', { PROJECT_FILE_PATH: escaped }, ['ensure_project_open']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(result, `Project saved: ${args.projectFilePath}`);
+      return await formatModifyingResponse(result, `Project saved: ${args.projectFilePath}`, escaped, mirrorCtx);
     }
   );
 
@@ -933,9 +933,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `POU '${args.name}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
+        `POU '${args.name}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`,
+        escProjPath,
+        mirrorCtx
       );
     }
   );
@@ -992,9 +994,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `Code set for '${sanPouPath}' in ${args.projectFilePath}. Project saved.`
+        `Code set for '${sanPouPath}' in ${args.projectFilePath}. Project saved.`,
+        escProjPath,
+        mirrorCtx
       );
     }
   );
@@ -1022,9 +1026,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `Property '${args.propertyName}' created under '${sanParentPath}' in ${args.projectFilePath}. Project saved.`
+        `Property '${args.propertyName}' created under '${sanParentPath}' in ${args.projectFilePath}. Project saved.`,
+        escProjPath,
+        mirrorCtx
       );
     }
   );
@@ -1052,9 +1058,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `Method '${args.methodName}' created under '${sanParentPath}' in ${args.projectFilePath}. Project saved.`
+        `Method '${args.methodName}' created under '${sanParentPath}' in ${args.projectFilePath}. Project saved.`,
+        escProjPath,
+        mirrorCtx
       );
     }
   );
@@ -1219,9 +1227,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `DUT '${args.name}' (${args.dutType}) created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
+        `DUT '${args.name}' (${args.dutType}) created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`,
+        escProjPath,
+        mirrorCtx
       );
     }
   );
@@ -1262,9 +1272,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `GVL '${args.name}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
+        `GVL '${args.name}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`,
+        escProjPath,
+        mirrorCtx
       );
     }
   );
@@ -1290,9 +1302,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `Folder '${args.folderName}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`
+        `Folder '${args.folderName}' created in '${sanParentPath}' of ${args.projectFilePath}. Project saved.`,
+        escProjPath,
+        mirrorCtx
       );
     }
   );
@@ -1316,9 +1330,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `Object '${sanObjPath}' deleted from ${args.projectFilePath}. Project saved.`
+        `Object '${sanObjPath}' deleted from ${args.projectFilePath}. Project saved.`,
+        escProjPath,
+        mirrorCtx
       );
     }
   );
@@ -1344,9 +1360,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open', 'find_object_by_path']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `Object '${sanObjPath}' renamed to '${args.newName}' in ${args.projectFilePath}. Project saved.`
+        `Object '${sanObjPath}' renamed to '${args.newName}' in ${args.projectFilePath}. Project saved.`,
+        escProjPath,
+        mirrorCtx
       );
     }
   );
@@ -1792,9 +1810,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         ['ensure_project_open']
       );
       const result = await executor.executeScript(script);
-      return formatToolResponse(
+      return await formatModifyingResponse(
         result,
-        `Library '${args.libraryName}' added to ${args.projectFilePath}. Project saved.`
+        `Library '${args.libraryName}' added to ${args.projectFilePath}. Project saved.`,
+        escaped,
+        mirrorCtx
       );
     }
   );
