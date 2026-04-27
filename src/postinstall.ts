@@ -12,17 +12,38 @@
  * and downgraded to a friendly note. We never block the install.
  */
 
-function isDevOrCi(): boolean {
-  // Skip during local installs / dev clones.
-  if (process.env.npm_config_global !== 'true') return true;
-  // Skip in CI.
+function shouldSkip(): boolean {
+  // Skip in CI -- banners pollute build logs.
   if (process.env.CI === 'true') return true;
   if (process.env.npm_config_ci === 'true') return true;
+
+  // Skip when running inside the package's own dev clone (developer ran
+  // `npm install` on a checkout of this repo). Detect by checking whether
+  // INIT_CWD (npm sets this to the user's invocation cwd) appears to be
+  // a checkout of THIS package, vs a global install or a downstream consumer.
+  // Heuristic: if INIT_CWD contains a package.json whose name matches ours,
+  // it's the dev clone.
+  if (process.env.INIT_CWD) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const fs = require('fs');
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const path = require('path');
+      const pkgPath = path.join(process.env.INIT_CWD, 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        if (pkg.name === 'codesys-mcp-sp21-plus') return true;
+      }
+    } catch {
+      // Not a dev clone or unreadable -- fall through and print the banner.
+    }
+  }
+
   return false;
 }
 
 async function main(): Promise<void> {
-  if (isDevOrCi()) {
+  if (shouldSkip()) {
     return;
   }
 
