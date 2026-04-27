@@ -16,6 +16,7 @@ import { CodesysLauncher } from './launcher';
 import { HeadlessExecutor } from './headless';
 import { ScriptManager } from './script-manager';
 import { serverLog, setLogLevel } from './logger';
+import { readRunningVersionSsh, formatSshVersionResult } from './ssh-version';
 
 /**
  * Classifier for `bump_project_version --level=auto`.
@@ -2265,6 +2266,35 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         result,
         `Running version on PLC: ${version}\n(read from _MCP_PROJECT_VERSION.sVersion via CODESYS online protocol)`
       );
+    }
+  );
+
+  s.tool(
+    'read_running_version_ssh',
+    "Reads the running project version from a CODESYS Control Linux PLC via SSH, by extracting the X.Y.Z.W literal of `_MCP_PROJECT_VERSION.sVersion` from the boot application binary. Bypasses CODESYS entirely -- no IDE running, no project lock, no online protocol. Requires SSH key auth (one-time setup, see error message if you don't have it) and passwordless sudo on the PLC for `strings`. Linux PLCs only (CODESYS Control on Raspberry Pi, IPC, etc.).",
+    {
+      host: z.string().describe('Hostname or IP of the CODESYS Control Linux PLC.'),
+      user: z.string().optional().describe('SSH user. Defaults to "karstein".'),
+      bootAppPath: z.string().optional().describe('Path to the boot application binary on the PLC. Defaults to "/var/opt/codesys/PlcLogic/Application/Application.app".'),
+    },
+    async (args: { host: string; user?: string; bootAppPath?: string }) => {
+      try {
+        const res = await readRunningVersionSsh({
+          host: args.host,
+          user: args.user,
+          bootAppPath: args.bootAppPath,
+        });
+        return {
+          content: [{ type: 'text' as const, text: formatSshVersionResult(res) }],
+          isError: false,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: 'text' as const, text: msg }],
+          isError: true,
+        };
+      }
     }
   );
 

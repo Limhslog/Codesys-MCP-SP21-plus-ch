@@ -259,12 +259,26 @@ Notes:
 | `--sp <number>` | With `--print-config`: emit only the entry for CODESYS V3.5 SP`<n>` | — |
 | `--name <name>` | With `--print-config --sp <n>`: override the MCP server entry name | — |
 | `--inspect <path>` | Read a CODESYS `.project` offline (no CODESYS needed) and print its profile name/version + mandatory libraries; uses the `unzip` CLI from Git for Windows / Linux+Mac | — |
+| `--ssh-version <host>` | SSH to a CODESYS Control Linux PLC and print the running project version (extracted from the boot-application binary). Bypasses CODESYS entirely. Requires SSH key auth + passwordless sudo for `strings`. | — |
+| `--ssh-user <name>` | With `--ssh-version`: SSH user | `karstein` |
+| `--ssh-boot-app <path>` | With `--ssh-version`: path to the boot application on the PLC | `/var/opt/codesys/PlcLogic/Application/Application.app` |
 | `--verbose` | Enable verbose logging | — |
 | `--debug` | Enable debug logging | — |
 | `-V, --version` | Show version number | — |
 | `-h, --help` | Show help | — |
 
 Environment variables `CODESYS_PATH` and `CODESYS_PROFILE` are used as defaults when the corresponding flags are not provided.
+
+### `--ssh-version` — read the running PLC's project version over SSH
+
+For CODESYS Control Linux PLCs (Raspberry Pi, IPC, etc.) the running project version can be read straight off the boot-application binary, without CODESYS being installed or the `.project` file being unlocked:
+
+```bash
+codesys-mcp-sp21-plus --ssh-version 192.168.1.83
+codesys-mcp-sp21-plus --ssh-version myplc.lan --ssh-user pi
+```
+
+Requires SSH key auth + passwordless sudo for `/usr/bin/strings` on the PLC. If your key isn't installed yet, the error message includes a one-line PowerShell recipe; full setup instructions live at [ssh-key-windows.md](https://gitlab.usv.no/karstein.kvistad/mr-ai-context/-/blob/main/ssh-key-windows.md).
 
 ## MCP Tools
 

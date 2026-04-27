@@ -8,6 +8,7 @@ import { startMcpServer } from './server';
 import { ServerConfig, ExecutionMode } from './types';
 import { detectInstalls, printConfig } from './detect';
 import { inspectProjectFile, suggestedServerName } from './inspect';
+import { readRunningVersionSsh, formatSshVersionResult } from './ssh-version';
 
 let version = '0.1.0';
 try {
@@ -54,11 +55,29 @@ program
   .option('--sp <number>', 'With --print-config: emit only the entry for CODESYS V3.5 SP<number>')
   .option('--name <name>', 'With --print-config --sp <n>: override the MCP server entry name')
   .option('--inspect <path>', 'Read a CODESYS .project offline and print profile + mandatory libraries, then exit (no CODESYS needed)')
+  .option('--ssh-version <host>', 'SSH to a CODESYS Control Linux PLC and print the running project version (extracted from the boot-application binary), then exit. Bypasses CODESYS entirely.')
+  .option('--ssh-user <name>', 'With --ssh-version: SSH user (default "karstein")')
+  .option('--ssh-boot-app <path>', 'With --ssh-version: path to the boot application on the PLC (default /var/opt/codesys/PlcLogic/Application/Application.app)')
   .parse(process.argv);
 
 const opts = program.opts();
 
-if (opts.inspect) {
+if (opts.sshVersion) {
+  // --ssh-version emits to stdout (pipe-friendly); errors go to stderr with exit 1.
+  readRunningVersionSsh({
+    host: opts.sshVersion,
+    user: opts.sshUser,
+    bootAppPath: opts.sshBootApp,
+  })
+    .then((res) => {
+      process.stdout.write(formatSshVersionResult(res) + '\n');
+      process.exit(0);
+    })
+    .catch((err) => {
+      process.stderr.write(`${(err as Error).message}\n`);
+      process.exit(1);
+    });
+} else if (opts.inspect) {
   // --inspect emits to stdout (pipe-friendly); errors go to stderr with exit 1.
   inspectProjectFile(opts.inspect)
     .then((res) => {
