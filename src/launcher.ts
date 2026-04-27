@@ -20,38 +20,76 @@ import { launcherLog } from './logger';
 // themselves up when the OS sweeps %TEMP%).
 const SESSION_DIR_PREFIX = 'codesys-mcp-sp21-plus';
 
+export interface RunningCodesys {
+  pid: number;
+  exePath: string;
+}
+
 /**
- * Returns the PIDs of every CODESYS.exe currently running on this Windows
- * machine -- whether spawned by this launcher, by a previous MCP session that
- * crashed without cleanup, or by the user opening CODESYS interactively.
+ * Returns every CODESYS.exe currently running on this Windows machine, with
+ * the absolute path of its image file alongside the PID.
  *
- * Used as a pre-launch guard so the launcher never spawns a second CODESYS
- * alongside an existing one. Two CODESYS instances against the same project
- * file race on the lock and the loser pops a "project is currently in use"
- * modal that freezes the IDE thread, breaking every subsequent script call
- * with 60s timeouts. The cheapest fix is to refuse the duplicate spawn.
+ * Used by the launcher's pre-spawn guard and the shutdown_codesys orphan
+ * killer. Both filter the list by the configured --codesys-path so that:
  *
- * Returns an empty list on non-Windows or if tasklist fails (we treat that
- * as "can't tell" rather than blocking; the user always retains the option
- * to close manually).
+ *   - Multiple CODESYS installs (e.g. SP21 + SP22) can run side-by-side.
+ *     CODESYS supports parallel instances of *different* installs; only
+ *     two instances of the *same* install on the *same* project trigger
+ *     the "project is currently in use" file-lock modal.
+ *   - shutdown_codesys never accidentally kills a CODESYS instance the
+ *     user owns (different install) or that belongs to a different MCP
+ *     server entry pointed at a different exe.
+ *
+ * Implementation: PowerShell Get-Process gives us {Id, Path} reliably.
+ * tasklist doesn't expose ExecutablePath; WMIC is deprecated on modern
+ * Windows. PowerShell's ~200ms cold start is fine at launch time.
+ *
+ * Returns an empty list on non-Windows or if PowerShell fails (we treat
+ * that as "can't tell" rather than blocking the spawn; the user retains
+ * the option to close manually if there really is a conflict).
  */
-function findRunningCodesysPids(): number[] {
+function findRunningCodesys(): RunningCodesys[] {
   if (process.platform !== 'win32') return [];
   try {
+    // ConvertTo-Json emits a single object when the collection has one
+    // element, an array otherwise. -AsArray would normalise but isn't
+    // available in PS5.1, so we coerce on the JS side.
+    const ps =
+      'Get-Process -Name CODESYS -ErrorAction SilentlyContinue ' +
+      '| Select-Object -Property Id,Path ' +
+      '| ConvertTo-Json -Compress';
     const out = execSync(
-      'tasklist /FI "IMAGENAME eq CODESYS.exe" /FO CSV /NH',
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+      `powershell -NoProfile -ExecutionPolicy Bypass -Command "${ps}"`,
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }
     );
-    const pids: number[] = [];
-    for (const line of out.split(/\r?\n/)) {
-      // CSV with quotes: "CODESYS.exe","12345","Console","1","456,789 K"
-      const m = line.match(/^"CODESYS\.exe","(\d+)"/);
-      if (m) pids.push(Number(m[1]));
+    const trimmed = out.trim();
+    if (!trimmed) return [];
+    const parsed = JSON.parse(trimmed);
+    const arr: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+    const result: RunningCodesys[] = [];
+    for (const entry of arr) {
+      if (!entry || typeof entry !== 'object') continue;
+      const e = entry as { Id?: unknown; Path?: unknown };
+      if (typeof e.Id !== 'number') continue;
+      if (typeof e.Path !== 'string') continue;
+      result.push({ pid: e.Id, exePath: e.Path });
     }
-    return pids;
+    return result;
   } catch {
     return [];
   }
+}
+
+/**
+ * Compare two Windows paths for equality. Case-insensitive; normalises
+ * forward and back slashes; trims trailing separators.
+ *
+ * Exported so the launcher unit test can pin the matching behaviour.
+ */
+export function pathsEqual(a: string, b: string): boolean {
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '').trim();
+  return norm(a) === norm(b);
 }
 const READY_TIMEOUT_MS = 60_000;
 const READY_POLL_MS = 500;
@@ -90,23 +128,32 @@ export class CodesysLauncher implements ScriptExecutor {
       throw new Error(err);
     }
 
-    // Refuse to spawn alongside an existing CODESYS.exe. Two instances against
-    // the same project file race on the lock and the loser pops a modal that
-    // freezes script execution. This catches:
-    //   - orphans from a prior MCP session that crashed (exit code 0) without
-    //     taking the IDE down with it
-    //   - the user's own interactive CODESYS instance
-    //   - a CODESYS still mid-shutdown after a previous shutdown_codesys call
-    const existingPids = findRunningCodesysPids();
-    if (existingPids.length > 0) {
+    // Refuse to spawn a 2nd instance of the SAME CODESYS install. Different
+    // installs (e.g. SP21 + SP22) coexist fine -- CODESYS supports parallel
+    // instances of different exes and they don't share the file lock unless
+    // they're opening the same .project. Two instances of the SAME exe, on
+    // the other hand:
+    //   - CODESYS-side: most installs enforce singleton-per-install and
+    //     refuse the 2nd spawn (or attach to the existing instance silently),
+    //     so we'd never get the IPC handshake.
+    //   - Our side: even if the 2nd starts, this MCP server can't IPC into
+    //     an instance it didn't spawn (no watcher attached).
+    //
+    // Earlier versions refused on ANY CODESYS.exe in tasklist, which broke
+    // multi-install setups (the one the README documents). Filter by the
+    // configured exe path so different installs are allowed through.
+    const conflicting = findRunningCodesys().filter((p) =>
+      pathsEqual(p.exePath, this.config.codesysPath)
+    );
+    if (conflicting.length > 0) {
+      const pids = conflicting.map((p) => p.pid).join(', ');
       const msg =
-        `Refusing to launch: ${existingPids.length} CODESYS.exe process(es) ` +
-        `already running (PID(s): ${existingPids.join(', ')}). The MCP launcher ` +
-        `cannot share IPC with an instance it did not spawn, and a second ` +
-        `CODESYS racing on the same project triggers a "project is currently ` +
-        `in use" modal that blocks all script execution. Close the existing ` +
-        `CODESYS window(s) first, or call shutdown_codesys if this server owns ` +
-        `the running instance, then retry.`;
+        `Refusing to launch: ${conflicting.length} CODESYS.exe instance(s) ` +
+        `of the same install already running (PID(s): ${pids}, exe: ` +
+        `${this.config.codesysPath}). This MCP server cannot share IPC with ` +
+        `an instance it didn't spawn. Close the existing window(s), or call ` +
+        `shutdown_codesys if this server owns them, then retry. ` +
+        `Other CODESYS installs are unaffected and may keep running.`;
       launcherLog.warn(msg);
       this.lastError = msg;
       this.setState('error');
@@ -202,17 +249,25 @@ export class CodesysLauncher implements ScriptExecutor {
     // tool actually does something useful in this state.
     if (this.state === 'stopped' || this.state === 'stopping') {
       if (this.pid === null) {
-        const orphans = findRunningCodesysPids();
+        // Only kill orphans of OUR configured exe -- never touch a CODESYS
+        // instance from a different install (could be the user's own work
+        // or owned by a different MCP server entry).
+        const orphans = findRunningCodesys().filter((p) =>
+          pathsEqual(p.exePath, this.config.codesysPath)
+        );
         if (orphans.length > 0) {
-          launcherLog.info(`shutdown_codesys: launcher has no tracked PID but found ${orphans.length} orphan CODESYS.exe (PIDs: ${orphans.join(', ')}). Force-killing.`);
-          for (const pid of orphans) {
+          const orphanPids = orphans.map((p) => p.pid);
+          launcherLog.info(`shutdown_codesys: launcher has no tracked PID but found ${orphanPids.length} orphan CODESYS.exe of the configured install (PIDs: ${orphanPids.join(', ')}). Force-killing.`);
+          for (const pid of orphanPids) {
             try {
               execSync(`taskkill /PID ${pid}`, { timeout: 5000, stdio: 'ignore' });
             } catch { /* ignore graceful failures, force-kill below */ }
           }
           // Give them a moment to close gracefully
           await this.sleep(2_000);
-          const stillAlive = findRunningCodesysPids();
+          const stillAlive = findRunningCodesys()
+            .filter((p) => pathsEqual(p.exePath, this.config.codesysPath))
+            .map((p) => p.pid);
           for (const pid of stillAlive) {
             try {
               execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, stdio: 'ignore' });

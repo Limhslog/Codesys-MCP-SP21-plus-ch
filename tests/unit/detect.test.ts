@@ -153,7 +153,8 @@ describe('printConfig', () => {
   it('emits one block per install with derived names when multiple', () => {
     const out = printConfig([sp19, sp21, sp22], { date: '2026-04-27' });
     expect(out).toContain('Detected 3 CODESYS installations');
-    expect(out).toContain('CAVEAT');
+    expect(out).toContain('Multiple entries can be active');
+    expect(out).toContain("don't open the SAME .project");
     expect(out).toContain('"codesys-sp19-patch4": {');
     expect(out).toContain('"codesys-sp21-patch5": {');
     expect(out).toContain('"codesys-sp22-patch1": {');

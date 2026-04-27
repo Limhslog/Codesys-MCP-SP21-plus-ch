@@ -113,10 +113,11 @@ export function printConfig(installs: CodesysInstall[], opts: PrintConfigOptions
   } else {
     lines.push(`// Detected ${filtered.length} CODESYS installations. Add the entries you want; remove the rest.`);
     lines.push(`//`);
-    lines.push(`// CAVEAT: the launcher refuses to spawn alongside any other CODESYS.exe,`);
-    lines.push(`// so only ONE of these can be active at a time. Adding multiple entries is`);
-    lines.push(`// fine -- Claude can call them by name -- but call shutdown_codesys before`);
-    lines.push(`// switching to a different one.`);
+    lines.push(`// Multiple entries can be active at the same time -- different CODESYS`);
+    lines.push(`// installs (e.g. SP21 + SP22) spawn separate processes and run side by side.`);
+    lines.push(`// The only hard rule: don't open the SAME .project file from two CODESYS`);
+    lines.push(`// instances simultaneously -- file-lock contention pops a "project is`);
+    lines.push(`// currently in use" modal that blocks all script execution.`);
   }
   lines.push(`//`);
   lines.push(`// Profile names are derived from the install directory version. If CODESYS's`);
