@@ -305,11 +305,13 @@ Requires SSH key auth + passwordless sudo for `/usr/bin/strings` on the PLC. If 
 
 | Tool | Description |
 |------|-------------|
-| `open_project` | Open an existing CODESYS project file (cross-project switch **FIXED**) |
+| `open_project` | Open an existing CODESYS project file (cross-project switch **FIXED**; SP-mismatch pre-flight **NEW**) |
 | `create_project` | Create a new project from the standard template |
 | `save_project` | Save the currently open project |
 | `compile_project` | Build the primary application with structured error output (120s timeout) — JSON `long` **FIXED** |
 | `get_compile_messages` | Retrieve last compiler messages without triggering a new build — JSON `long` **FIXED** |
+
+`open_project` runs an offline pre-flight (`projectinspectiondata.auxiliary` ZIP+XML — no CODESYS) that compares the project's saved profile against this server's `--codesys-profile`. Exact match proceeds silently; same-SP-different-patch proceeds with a one-line warning (CODESYS will pop its patch-difference dialog); SP mismatch refuses without opening so the project isn't dragged through a downgrade/upgrade conversion. The refusal includes a routing hint: pick a different MCP server entry or generate one with `codesys-mcp-sp21-plus --print-config --for-project "<projectFilePath>"`. If the inspection itself fails (file missing, malformed .project, non-standard profile name), pre-flight falls through silently and the existing CODESYS open path produces its native error.
 
 ### POU / Code Authoring Tools
 

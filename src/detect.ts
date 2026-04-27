@@ -15,6 +15,27 @@ export interface CodesysInstall {
 
 const VERSION_RE = /^CODESYS\s+(\d+)\.(\d+)\.(\d+)\.(\d+)$/i;
 
+/**
+ * Parse a CODESYS profile name like "CODESYS V3.5 SP22 Patch 1" or
+ * "CODESYS V3.5 SP21" into its SP + patch numbers.
+ *
+ * Returns null when the name doesn't match the canonical CODESYS profile
+ * shape -- callers should treat that as "can't decide" and skip whatever
+ * behaviour the parsed values would have driven (e.g. open_project's
+ * pre-flight mismatch check falls through silently).
+ */
+const PROFILE_NAME_RE = /^CODESYS\s+V\d+\.\d+\s+SP(\d+)(?:\s+Patch\s+(\d+))?\s*$/i;
+
+export function parseProfileName(name: string): { sp: number; patch: number } | null {
+  if (!name) return null;
+  const m = PROFILE_NAME_RE.exec(name.trim());
+  if (!m) return null;
+  const sp = parseInt(m[1], 10);
+  const patch = m[2] !== undefined ? parseInt(m[2], 10) : 0;
+  if (Number.isNaN(sp) || Number.isNaN(patch)) return null;
+  return { sp, patch };
+}
+
 function deriveProfileName(major: number, minor: number, sp: number, patch: number): string {
   const head = `CODESYS V${major}.${minor} SP${sp}`;
   return patch === 0 ? head : `${head} Patch ${patch}`;

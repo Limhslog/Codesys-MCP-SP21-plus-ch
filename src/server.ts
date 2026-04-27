@@ -18,6 +18,9 @@ import { ScriptManager } from './script-manager';
 import { serverLog, setLogLevel } from './logger';
 import { readRunningVersionSsh, formatSshVersionResult } from './ssh-version';
 import { resolveMirrorRoot } from './mirror-paths';
+import { inspectProjectFile } from './inspect';
+import { parseProfileName } from './detect';
+import { decideOpenProjectPreflight } from './preflight';
 
 /**
  * Classifier for `bump_project_version --level=auto`.
@@ -845,11 +848,51 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     },
     async (args: { filePath: string }) => {
       const escaped = resolvePath(args.filePath, workspaceDir);
+
+      // Pre-flight: compare the project's saved profile against this
+      // server's configured profile. Refuses on SP mismatch, warns on
+      // patch mismatch, silent on exact match. Falls through silently
+      // (logs only) if anything in the chain fails -- the existing open
+      // path then surfaces CODESYS's native error.
+      let preflightWarning = '';
+      try {
+        const serverProfile = parseProfileName(config.profileName);
+        if (serverProfile) {
+          const insp = await inspectProjectFile(escaped);
+          const decision = decideOpenProjectPreflight(
+            { sp: insp.sp, patch: insp.patch, profileName: insp.profileName, profileVersion: insp.profileVersion },
+            serverProfile,
+            escaped
+          );
+          if (decision.action === 'refuse') {
+            return {
+              content: [{ type: 'text' as const, text: decision.message ?? 'Refused' }],
+              isError: true,
+            };
+          }
+          if (decision.action === 'proceed-with-warning' && decision.message) {
+            preflightWarning = decision.message + '\n';
+          }
+        }
+        // serverProfile null -> non-standard profile name, can't compare; fall through.
+      } catch (e) {
+        serverLog.warn(
+          `open_project pre-flight inspection failed (proceeding anyway): ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      }
+
       const script = scriptManager.prepareScriptWithHelpers(
         'open_project', { PROJECT_FILE_PATH: escaped }, ['ensure_project_open']
       );
       const result = await executor.executeScript(script);
-      return await formatModifyingResponse(result, `Project opened: ${args.filePath}`, escaped, mirrorCtx);
+      return await formatModifyingResponse(
+        result,
+        `${preflightWarning}Project opened: ${args.filePath}`,
+        escaped,
+        mirrorCtx
+      );
     }
   );
 
