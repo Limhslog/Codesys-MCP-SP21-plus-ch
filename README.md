@@ -230,6 +230,7 @@ Notes:
 | `--print-config` | Print a ready-to-paste `.mcp.json` snippet for every detected install and exit | — |
 | `--sp <number>` | With `--print-config`: emit only the entry for CODESYS V3.5 SP`<n>` | — |
 | `--name <name>` | With `--print-config --sp <n>`: override the MCP server entry name | — |
+| `--inspect <path>` | Read a CODESYS `.project` offline (no CODESYS needed) and print its profile name/version + mandatory libraries; uses the `unzip` CLI from Git for Windows / Linux+Mac | — |
 | `--verbose` | Enable verbose logging | — |
 | `--debug` | Enable debug logging | — |
 | `-V, --version` | Show version number | — |

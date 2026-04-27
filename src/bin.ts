@@ -7,6 +7,7 @@ import { program } from 'commander';
 import { startMcpServer } from './server';
 import { ServerConfig, ExecutionMode } from './types';
 import { detectInstalls, printConfig } from './detect';
+import { inspectProjectFile, suggestedServerName } from './inspect';
 
 let version = '0.1.0';
 try {
@@ -52,11 +53,38 @@ program
   .option('--print-config', 'Print a ready-to-paste .mcp.json snippet for every detected install and exit')
   .option('--sp <number>', 'With --print-config: emit only the entry for CODESYS V3.5 SP<number>')
   .option('--name <name>', 'With --print-config --sp <n>: override the MCP server entry name')
+  .option('--inspect <path>', 'Read a CODESYS .project offline and print profile + mandatory libraries, then exit (no CODESYS needed)')
   .parse(process.argv);
 
 const opts = program.opts();
 
-if (opts.detect) {
+if (opts.inspect) {
+  // --inspect emits to stdout (pipe-friendly); errors go to stderr with exit 1.
+  inspectProjectFile(opts.inspect)
+    .then((res) => {
+      const lines: string[] = [];
+      lines.push(`Project:         ${res.filePath}`);
+      lines.push(`Profile name:    ${res.profileName}`);
+      lines.push(`Profile version: ${res.profileVersion}`);
+      const patchSuffix = res.patch === 0 ? ' Patch 0' : ` Patch ${res.patch}`;
+      lines.push(`SP:              ${res.sp}${patchSuffix}`);
+      lines.push(`Suggested entry: ${suggestedServerName(res.sp, res.patch)}`);
+      lines.push('');
+      lines.push(`Mandatory libraries (${res.mandatoryLibraries.length}):`);
+      for (const lib of res.mandatoryLibraries) {
+        const title = lib.title ?? '(unnamed)';
+        const version = lib.version ?? '?';
+        const guid = lib.typeGuid ? ` [TypeGuid: ${lib.typeGuid}]` : '';
+        lines.push(`  - ${title} (${version})${guid}`);
+      }
+      process.stdout.write(lines.join('\n') + '\n');
+      process.exit(0);
+    })
+    .catch((err) => {
+      process.stderr.write(`${(err as Error).message}\n`);
+      process.exit(1);
+    });
+} else if (opts.detect) {
   const installs = detectInstalls();
   process.stderr.write('Scanning for CODESYS installations...\n\n');
   if (installs.length === 0) {
