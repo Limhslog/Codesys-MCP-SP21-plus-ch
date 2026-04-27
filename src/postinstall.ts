@@ -69,16 +69,32 @@ async function main(): Promise<void> {
     return;
   }
 
-  process.stdout.write(`Add the following to your .mcp.json (Claude Code configuration):\n\n`);
+  process.stdout.write(`Add the following to your Claude Code MCP configuration:\n\n`);
   try {
     process.stdout.write(printConfig(installs) + '\n\n');
   } catch (err) {
     process.stdout.write(`(printConfig failed: ${(err as Error).message})\n\n`);
     return;
   }
+
+  const userScope = process.env.USERPROFILE
+    ? process.env.USERPROFILE + '\\.claude.json'
+    : '~/.claude.json';
+
   process.stdout.write(
-    `Re-run anytime with: codesys-mcp-sp21-plus --print-config\n` +
-    `Filter to one SP family with:  codesys-mcp-sp21-plus --print-config --sp 22\n\n`
+    `Where to put it:\n` +
+    `  - Project-scoped (recommended, shareable via git):\n` +
+    `      <your-project-root>\\.mcp.json\n` +
+    `      Create the file if it doesn't exist; if it does, merge the "mcpServers"\n` +
+    `      entries into the existing object.\n` +
+    `  - User-scoped (applies to every Claude Code session):\n` +
+    `      ${userScope}\n` +
+    `      Or use the CLI:  claude mcp add codesys-sp22-patch1 codesys-mcp-sp21-plus -- --codesys-path ... --codesys-profile ...\n` +
+    `\n` +
+    `After editing, restart Claude Code so it re-reads the MCP config.\n` +
+    `\n` +
+    `Re-run anytime:               codesys-mcp-sp21-plus --print-config\n` +
+    `Filter to one SP family:      codesys-mcp-sp21-plus --print-config --sp 22\n\n`
   );
 }
 
