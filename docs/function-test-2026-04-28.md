@@ -1,4 +1,4 @@
-# Smoke test -- 2026-04-28 (re-verify the 5 morning bug fixes)
+# Function test -- 2026-04-28 (re-verify the 5 morning bug fixes)
 
 Targeted re-run of the 5 fixes that landed AFTER the 2026-04-25 sweep
 (all on the same `main` branch). Each fix shipped with vitest e2e
@@ -64,4 +64,4 @@ yet):
 
 ---
 
-*Smoke test executed against this fork @ HEAD `f34d002` on 2026-04-28.*
+*Function test executed against this fork @ HEAD `f34d002` on 2026-04-28.*

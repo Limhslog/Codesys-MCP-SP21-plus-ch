@@ -1,10 +1,17 @@
 import sys, scriptengine as script_engine, os, traceback, json
 
 
+# ============================================================================
+# Inlined helpers (shared with compile_project.py).
+# Inlined rather than imported because the IPC executor concatenates helper
+# scripts at runtime; siblings in src/scripts/ don't have a sys.path entry.
+# Keep these two copies in sync.
+# ============================================================================
+
+_JSON_INT64_MAX = 9223372036854775807  # 2**63 - 1
+
+
 def _coerce_int(v):
-    """IronPython 2.7's json.dumps cannot serialize System.Int64-backed
-    `long` values, which is what CODESYS's compile-message objects expose
-    as line_number / position. Coerce to native int."""
     if v is None:
         return None
     try:
@@ -14,7 +21,6 @@ def _coerce_int(v):
 
 
 def _coerce_str(v):
-    """Force str() on CLR-typed fields (System.Uri etc.)."""
     if v is None:
         return None
     try:
@@ -23,16 +29,10 @@ def _coerce_str(v):
         return None
 
 
-_JSON_INT64_MAX = 9223372036854775807  # 2**63 - 1
-
-
 def _coerce_for_json(obj):
-    """Deep-walk arbitrary message dicts/lists and coerce values that
-    json.dumps can't handle on IronPython 2.7. See compile_project.py for
-    the rationale; same helper, same shape."""
     if isinstance(obj, bool):
         return obj
-    if isinstance(obj, (int, long)):
+    if isinstance(obj, (int, long)):  # noqa: F821 -- IronPython 2.7
         try:
             if obj > _JSON_INT64_MAX or obj < -_JSON_INT64_MAX - 1:
                 return str(obj)
@@ -53,7 +53,7 @@ def _coerce_for_json(obj):
     return obj
 
 
-def _build_message_entry(msg):
+def _build_message_entry(msg, category_name=None):
     entry = {}
     if hasattr(msg, 'severity'):
         try:
@@ -87,8 +87,185 @@ def _build_message_entry(msg):
         entry['line'] = _coerce_int(msg.line_number)
     elif hasattr(msg, 'position'):
         entry['line'] = _coerce_int(msg.position)
+    cat = None
+    for attr in ('category', 'category_name', 'category_guid'):
+        if hasattr(msg, attr):
+            try:
+                v = getattr(msg, attr)
+                if v is not None:
+                    cat = _coerce_str(v)
+                    if cat:
+                        break
+            except Exception:
+                pass
+    if not cat and category_name:
+        cat = category_name
+    if cat:
+        entry['category'] = cat
     return entry
 
+
+def _enumerate_categories(script_engine_arg):
+    """Returns a list of (label, category_obj_or_guid_or_None). Always
+    includes a (None, None) sentinel for the no-filter call."""
+    cats = [('<default-no-filter>', None)]
+    try:
+        se_sys = getattr(script_engine_arg, 'system', None)
+        if se_sys is not None:
+            mc = getattr(se_sys, 'message_categories', None)
+            if mc is not None:
+                try:
+                    for c in mc:
+                        try:
+                            label = (
+                                _coerce_str(getattr(c, 'name', None))
+                                or _coerce_str(getattr(c, 'guid', None))
+                                or _coerce_str(c)
+                                or '<unnamed>'
+                            )
+                            cats.append((label, c))
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # Well-known V3.5 category GUIDs (probed as fallback strings).
+    well_known = [
+        ('Compile (well-known GUID)', '90F1B997-7AB7-4B11-B637-D55D71BC4F2A'),
+        ('Build (well-known GUID)',   '7390398F-1B2F-4B30-B6E2-37F2BB7B57E0'),
+        ('Online (well-known GUID)',  '15F65557-DC73-4193-B7F2-EFF5A2A6C10C'),
+        ('LibMan (well-known GUID)',  '0B8D54FB-C68A-43F9-9B4D-79DBE1F8DF44'),
+    ]
+    for lbl, g in well_known:
+        cats.append((lbl, g))
+    return cats
+
+
+def _extract_all_messages(target_app, script_engine_arg):
+    """Aggregate compile/build/library messages across every category we
+    can probe. Returns a list of message-entry dicts, deduped by
+    (severity, text, object, line)."""
+    all_entries = []
+    seen = set()
+
+    def _add(entry):
+        key = (
+            entry.get('severity'),
+            entry.get('text'),
+            entry.get('object'),
+            entry.get('line'),
+        )
+        if key in seen:
+            return False
+        seen.add(key)
+        all_entries.append(entry)
+        return True
+
+    if target_app is not None and hasattr(target_app, 'get_message_objects'):
+        for label, cat in _enumerate_categories(script_engine_arg):
+            try:
+                if cat is None:
+                    msgs = target_app.get_message_objects()
+                else:
+                    try:
+                        msgs = target_app.get_message_objects(cat)
+                    except TypeError:
+                        continue
+            except Exception as e:
+                print("DEBUG: app.get_message_objects(%s) failed: %s" % (label, e))
+                continue
+            if not msgs:
+                continue
+            count_before = len(all_entries)
+            try:
+                for m in msgs:
+                    try:
+                        _add(_build_message_entry(m, label))
+                    except Exception as e:
+                        print("DEBUG: failed to entry-ize msg from cat=%s: %s" % (label, e))
+            except Exception:
+                pass
+            added = len(all_entries) - count_before
+            if added > 0:
+                print("DEBUG: app.get_message_objects(%s) added %d new" % (label, added))
+
+    se_sys = getattr(script_engine_arg, 'system', None)
+    if se_sys is not None and hasattr(se_sys, 'get_message_objects'):
+        for label, cat in _enumerate_categories(script_engine_arg):
+            try:
+                if cat is None:
+                    msgs = se_sys.get_message_objects()
+                else:
+                    try:
+                        msgs = se_sys.get_message_objects(cat)
+                    except TypeError:
+                        continue
+            except Exception as e:
+                print("DEBUG: system.get_message_objects(%s) failed: %s" % (label, e))
+                continue
+            if not msgs:
+                continue
+            count_before = len(all_entries)
+            try:
+                for m in msgs:
+                    try:
+                        _add(_build_message_entry(m, label))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            added = len(all_entries) - count_before
+            if added > 0:
+                print("DEBUG: system.get_message_objects(%s) added %d new" % (label, added))
+
+    if se_sys is not None and hasattr(se_sys, 'get_messages'):
+        try:
+            msgs = se_sys.get_messages()
+            if msgs:
+                count_before = len(all_entries)
+                for m in msgs:
+                    try:
+                        _add(_build_message_entry(m, '<legacy>'))
+                    except Exception:
+                        pass
+                added = len(all_entries) - count_before
+                if added > 0:
+                    print("DEBUG: system.get_messages() added %d new" % added)
+        except Exception as e:
+            print("DEBUG: system.get_messages() failed: %s" % e)
+
+    return all_entries
+
+
+def _count_severity(entries):
+    e = w = i = o = 0
+    for entry in entries:
+        sev = entry.get('severity', 'unknown')
+        if sev == 'error':
+            e += 1
+        elif sev == 'warning':
+            w += 1
+        elif sev == 'info':
+            i += 1
+        else:
+            o += 1
+    return e, w, i, o
+
+
+def _render_messages_block(entries):
+    try:
+        messages_json = json.dumps(_coerce_for_json(entries))
+    except TypeError as je:
+        print("WARN: json.dumps raised %s -- retrying with default=str fallback" % je)
+        messages_json = json.dumps(_coerce_for_json(entries), default=lambda o: str(o))
+    e, w, i, o = _count_severity(entries)
+    return messages_json, e, w, i, o
+
+
+# ============================================================================
+# Main
+# ============================================================================
 
 try:
     print("DEBUG: get_compile_messages script: Project='%s'" % PROJECT_FILE_PATH)
@@ -97,7 +274,6 @@ try:
     target_app = None
     app_name = "N/A"
 
-    # Try getting active application first
     try:
         target_app = primary_project.active_application
         if target_app:
@@ -105,7 +281,6 @@ try:
     except Exception as active_err:
         print("WARN: Could not get active application: %s" % active_err)
 
-    # If no active app, search for the first one
     if not target_app:
         try:
             all_children = primary_project.get_children(True)
@@ -120,60 +295,18 @@ try:
     if not target_app:
         raise RuntimeError("No application found in project '%s'" % project_name)
 
-    # Extract compiler messages using multiple API patterns
-    messages = []
-    messages_found = False
+    messages = _extract_all_messages(target_app, script_engine)
+    messages_json, errors, warnings, infos, others = _render_messages_block(messages)
 
-    # Pattern 1: target_app.get_message_objects()
-    if hasattr(target_app, 'get_message_objects'):
-        try:
-            msg_objects = target_app.get_message_objects()
-            if msg_objects is not None:
-                messages_found = True
-                for msg in msg_objects:
-                    messages.append(_build_message_entry(msg))
-                print("DEBUG: Got %d messages from app.get_message_objects()" % len(messages))
-        except Exception as e:
-            print("DEBUG: app.get_message_objects() failed: %s" % e)
-
-    # Pattern 2: script_engine.system.get_message_objects()
-    if not messages_found and hasattr(script_engine, 'system'):
-        se_sys = script_engine.system
-        if hasattr(se_sys, 'get_message_objects'):
-            try:
-                msg_objects = se_sys.get_message_objects()
-                if msg_objects is not None:
-                    messages_found = True
-                    for msg in msg_objects:
-                        messages.append(_build_message_entry(msg))
-                    print("DEBUG: Got %d messages from system.get_message_objects()" % len(messages))
-            except Exception as e:
-                print("DEBUG: system.get_message_objects() failed: %s" % e)
-
-    # Pattern 3: script_engine.system.get_messages() (older API)
-    if not messages_found and hasattr(script_engine, 'system'):
-        se_sys = script_engine.system
-        if hasattr(se_sys, 'get_messages'):
-            try:
-                msg_objects = se_sys.get_messages()
-                if msg_objects is not None:
-                    messages_found = True
-                    for msg in msg_objects:
-                        messages.append(_build_message_entry(msg))
-                    print("DEBUG: Got %d messages from system.get_messages()" % len(messages))
-            except Exception as e:
-                print("DEBUG: system.get_messages() failed: %s" % e)
-
-    try:
-        messages_json = json.dumps(_coerce_for_json(messages))
-    except TypeError as je:
-        print("WARN: json.dumps raised %s -- retrying with default=str fallback" % je)
-        messages_json = json.dumps(_coerce_for_json(messages), default=lambda o: str(o))
     print("### COMPILE_MESSAGES_START ###")
     print(messages_json)
     print("### COMPILE_MESSAGES_END ###")
-    print("Messages Found: %s" % messages_found)
-    print("Message Count: %d" % len(messages))
+    print("Application: %s" % app_name)
+    print("Errors: %d" % errors)
+    print("Warnings: %d" % warnings)
+    print("Infos: %d" % infos)
+    print("Others: %d" % others)
+    print("Total: %d" % len(messages))
     print("SCRIPT_SUCCESS: Compile messages retrieved.")
     sys.exit(0)
 except Exception as e:

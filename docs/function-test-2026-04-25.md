@@ -1,4 +1,4 @@
-# Smoke test -- 2026-04-25 (post device-side fix + late-day extensions)
+# Function test -- 2026-04-25 (post device-side fix + late-day extensions)
 
 End-to-end test of every MCP tool exposed by [`phobicdotno/Codesys-MCP-SP21-plus`](https://github.com/phobicdotno/Codesys-MCP-SP21-plus)
 as of end-of-day 2026-04-25 (then on the now-deleted `sp21-plus-migration-notes` working branch; the same commits are reachable from `main`). Covers the watcher rewrite that
@@ -175,4 +175,4 @@ the `(* Project path: ... *)` header convention.
 
 ---
 
-*Smoke test executed against this fork @ HEAD on 2026-04-25.*
+*Function test executed against this fork @ HEAD on 2026-04-25.*

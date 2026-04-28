@@ -122,23 +122,76 @@ def _find_added_reference(lm, target):
 
 
 def _is_resolved(ref):
-    """A managed reference (is_managed=True or is_placeholder=False) is
-    always resolved. A placeholder is resolved iff its effective_resolution
-    is a non-empty string."""
+    """Determine whether the reference actually resolves to an installed
+    library, not just whether it carries the 'managed' flag.
+
+    Why this is harder than it looks: CODESYS lets you call
+    `add_placeholder(name_str)` (or `add_library(name_str)`) for a name
+    that is not in the installed Library Repository. The resulting
+    reference reports `is_placeholder=False` AND looks structurally
+    fine to the script API -- but the IDE's Library Manager shows it
+    with a yellow-warning triangle and an empty 'Effective Version'
+    column, and any code that touches it fails to compile with
+    'placeholder library X could not be resolved'.
+
+    The honest signal is the resolution metadata. A truly resolved
+    reference exposes a non-empty version-bearing attribute (one of
+    `effective_version`, `resolved_version`, or a non-null
+    `resolved_library`). A hollow reference has all of those empty.
+
+    We probe a few attribute names because they vary across SPs."""
+    # First: a placeholder is resolved iff its effective_resolution
+    # is a non-empty string (this is the older, narrower check that
+    # was always correct for placeholders; we keep it).
     try:
         is_ph = bool(getattr(ref, 'is_placeholder', False))
     except Exception:
         is_ph = False
-    if not is_ph:
-        return True
-    try:
-        eff = getattr(ref, 'effective_resolution', None)
-    except Exception:
-        eff = None
-    if eff is None:
-        return False
-    s = str(eff).strip()
-    return len(s) > 0
+    if is_ph:
+        try:
+            eff = getattr(ref, 'effective_resolution', None)
+        except Exception:
+            eff = None
+        if eff is None:
+            return False
+        s = str(eff).strip()
+        return len(s) > 0
+
+    # Non-placeholder ('managed') reference: trust ONLY if version /
+    # resolved-library metadata is actually present. This is the part
+    # that was missing before -- the old code just returned True here
+    # and shipped hollow refs.
+    version_attrs = (
+        'effective_version',
+        'resolved_version',
+        'version',
+    )
+    for attr in version_attrs:
+        try:
+            v = getattr(ref, attr, None)
+        except Exception:
+            v = None
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s and s.lower() not in ('none', '0.0.0.0', '<none>'):
+            return True
+    # Try the resolved-library object itself.
+    for attr in ('resolved_library', 'managed_library', 'library'):
+        try:
+            lib = getattr(ref, attr, None)
+        except Exception:
+            lib = None
+        if lib is not None:
+            return True
+    # Nothing answered; treat as unresolved so the post-add guard
+    # backs the change out.
+    print("DEBUG: _is_resolved: managed ref appears hollow -- "
+          "no effective_version / resolved_library / version metadata. "
+          "name=%r, attrs=%s"
+          % (getattr(ref, 'name', '?'),
+             sorted([a for a in dir(ref) if not a.startswith('_')])[:30]))
+    return False
 
 
 def _try_remove(lm, name):
