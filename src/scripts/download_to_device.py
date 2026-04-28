@@ -5,6 +5,7 @@ LOGIN_WAIT_SECONDS = {LOGIN_WAIT_SECONDS}
 try:
     print("DEBUG: download_to_device script: Project='%s', LoginWaitSec=%d" % (
         PROJECT_FILE_PATH, LOGIN_WAIT_SECONDS))
+    register_device_credentials_if_set()
     primary_project = ensure_project_open(PROJECT_FILE_PATH)
 
     online_app, target_app = ensure_online_connection(primary_project)

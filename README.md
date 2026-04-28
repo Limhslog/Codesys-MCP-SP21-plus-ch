@@ -332,12 +332,12 @@ Requires SSH key auth + passwordless sudo for `/usr/bin/strings` on the PLC. If 
 
 | Tool | Description |
 |------|-------------|
-| `connect_to_device` | Login to the PLC runtime — `LoginMode` signature + auto-login **FIXED** |
+| `connect_to_device` | Login to the PLC runtime — `LoginMode` signature + auto-login **FIXED**; **NEW** `deviceUser`/`devicePassword` args (or `CODESYS_DEVICE_USER`/`CODESYS_DEVICE_PASSWORD` env) pre-register credentials via `ScriptOnline.set_default_credentials` so the modal "Device User Login" dialog is suppressed |
 | `disconnect_from_device` | Logout from the PLC runtime |
 | `get_application_state` | Check if the PLC application is running, stopped, or in exception |
 | `read_variable` | Read a live variable value from the running PLC (e.g., `PLC_PRG.bMotorRunning`) |
 | `write_variable` | Write/force a variable value on the running PLC |
-| `download_to_device` | Download compiled application to PLC (attempts online change first, 120s timeout) |
+| `download_to_device` | Download compiled application to PLC (attempts online change first, 120s timeout); same `deviceUser`/`devicePassword` credential-injection support as `connect_to_device` so the Device User Login dialog can be suppressed on every download too |
 | `start_stop_application` | Start or stop the PLC application |
 | `restart_runtime_ssh` | **NEW** — SSH into a Linux PLC and restart `codesyscontrol` via password-fed `sudo -S`. After issuing `systemctl restart`, polls `ss -tln` for the runtime port (default 11740) until it actually comes up — works around `systemctl is-active` reporting "active" after the binary has died from license-demo expiry. Defaults match the codesys-pi.local Pi |
 

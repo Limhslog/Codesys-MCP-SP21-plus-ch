@@ -1505,21 +1505,27 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'connect_to_device',
-    'Connects (logs in) to the PLC runtime for the active application. Requires a configured device/gateway in the project. The first connect to a password-protected runtime pops a credential dialog in CODESYS that the user must fill in -- the loginWaitSeconds parameter controls how long the script polls for state stabilisation while that dialog is up.',
+    'Connects (logs in) to the PLC runtime for the active application. Requires a configured device/gateway in the project. By default the IDE pops a modal "Device User Login" dialog the user must fill in. Pass deviceUser+devicePassword (or set CODESYS_DEVICE_USER/CODESYS_DEVICE_PASSWORD env vars in the MCP server config) to pre-register credentials via ScriptOnline.set_default_credentials and skip the dialog entirely.',
     {
       projectFilePath: z.string().describe("Path to the project file."),
-      loginWaitSeconds: z.number().int().min(0).max(600).optional().describe("Seconds to wait for the application state to stabilise after login() returns. Used to give the user time to fill in a credential dialog. Default: 60. Range 0-600."),
+      loginWaitSeconds: z.number().int().min(0).max(600).optional().describe("Seconds to wait for the application state to stabilise after login() returns. Default: 60. Range 0-600."),
+      deviceUser: z.string().optional().describe("Device user account name. Pre-registered via set_default_credentials so the modal Device User Login dialog is suppressed. Falls back to env var CODESYS_DEVICE_USER. If neither is set, the dialog will pop (current behaviour)."),
+      devicePassword: z.string().optional().describe("Device user password. Same fallback chain as deviceUser via env CODESYS_DEVICE_PASSWORD."),
     },
-    async (args: { projectFilePath: string; loginWaitSeconds?: number }) => {
+    async (args: { projectFilePath: string; loginWaitSeconds?: number; deviceUser?: string; devicePassword?: string }) => {
       const escaped = resolvePath(args.projectFilePath, workspaceDir);
       const waitSec = args.loginWaitSeconds ?? 60;
+      const deviceUser = args.deviceUser ?? process.env.CODESYS_DEVICE_USER ?? '';
+      const devicePassword = args.devicePassword ?? process.env.CODESYS_DEVICE_PASSWORD ?? '';
       const script = scriptManager.prepareScriptWithHelpers(
         'connect_to_device',
         {
           PROJECT_FILE_PATH: escaped,
           LOGIN_WAIT_SECONDS: String(waitSec),
+          DEVICE_USER: deviceUser,
+          DEVICE_PASSWORD: devicePassword,
         },
-        ['ensure_project_open', 'ensure_online_connection']
+        ['register_device_credentials', 'ensure_project_open', 'ensure_online_connection']
       );
       // Tool-side timeout = wait window + 30s headroom for actual login work
       const ipcTimeoutMs = (waitSec + 30) * 1000;
@@ -1646,21 +1652,27 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'download_to_device',
-    'Downloads the compiled application to the PLC device. Attempts online change first, falls back to full download. Same login-dialog handling as connect_to_device: loginWaitSeconds controls how long the script waits for state stabilisation if a credential dialog pops up.',
+    'Downloads the compiled application to the PLC device. Attempts online change first, falls back to full download. Same credential-injection support as connect_to_device: pass deviceUser+devicePassword (or set CODESYS_DEVICE_USER/CODESYS_DEVICE_PASSWORD env vars on the MCP) to suppress the Device User Login dialog that the IDE otherwise pops on every download.',
     {
       projectFilePath: z.string().describe("Path to the project file."),
       loginWaitSeconds: z.number().int().min(0).max(600).optional().describe("Seconds to wait for application state to stabilise after login() returns. Default: 60. Range 0-600."),
+      deviceUser: z.string().optional().describe("Device user account. Pre-registered via set_default_credentials so the modal Device User Login dialog is suppressed. Falls back to env CODESYS_DEVICE_USER."),
+      devicePassword: z.string().optional().describe("Device user password. Falls back to env CODESYS_DEVICE_PASSWORD."),
     },
-    async (args: { projectFilePath: string; loginWaitSeconds?: number }) => {
+    async (args: { projectFilePath: string; loginWaitSeconds?: number; deviceUser?: string; devicePassword?: string }) => {
       const escaped = resolvePath(args.projectFilePath, workspaceDir);
       const waitSec = args.loginWaitSeconds ?? 60;
+      const deviceUser = args.deviceUser ?? process.env.CODESYS_DEVICE_USER ?? '';
+      const devicePassword = args.devicePassword ?? process.env.CODESYS_DEVICE_PASSWORD ?? '';
       const script = scriptManager.prepareScriptWithHelpers(
         'download_to_device',
         {
           PROJECT_FILE_PATH: escaped,
           LOGIN_WAIT_SECONDS: String(waitSec),
+          DEVICE_USER: deviceUser,
+          DEVICE_PASSWORD: devicePassword,
         },
-        ['ensure_project_open', 'ensure_online_connection']
+        ['register_device_credentials', 'ensure_project_open', 'ensure_online_connection']
       );
       // Tool-side timeout = wait window + 120s headroom for the actual download
       const ipcTimeoutMs = (waitSec + 120) * 1000;
