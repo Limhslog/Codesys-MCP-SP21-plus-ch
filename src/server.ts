@@ -17,6 +17,10 @@ import { HeadlessExecutor } from './headless';
 import { ScriptManager } from './script-manager';
 import { serverLog, setLogLevel } from './logger';
 import { readRunningVersionSsh, formatSshVersionResult } from './ssh-version';
+import {
+  restartCodesysRuntime,
+  formatRestartRuntimeResult,
+} from './ssh-restart-runtime';
 import { resolveMirrorRoot } from './mirror-paths';
 import { inspectProjectFile } from './inspect';
 import { parseProfileName } from './detect';
@@ -2345,6 +2349,48 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         return {
           content: [{ type: 'text' as const, text: formatSshVersionResult(res) }],
           isError: false,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: 'text' as const, text: msg }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  s.tool(
+    'restart_runtime_ssh',
+    "Restart the CODESYS Control runtime on a Linux PLC (default: codesys-pi.local) via SSH. Uses password auth and feeds the sudo password to `sudo -S`, so it works in environments where pubkey auth is broken (e.g. Pi sshd 10.x signature-rejection bug) or sudoers NOPASSWD isn't configured. After issuing `systemctl restart`, polls `ss -tln` for the runtime's listen port (default 11740) until it comes up or the liveness window expires -- this is the real liveness signal, since `systemctl is-active` reports 'active' even after the runtime binary has died from license-demo expiry. Defaults match the only Pi we currently target (codesys-pi.local / karstein / codesys123 / service codesyscontrol); every field is overridable for other deployments.",
+    {
+      host: z.string().optional().describe('Hostname or IP of the PLC. Default: codesys-pi.local.'),
+      port: z.number().optional().describe('SSH port. Default: 22.'),
+      user: z.string().optional().describe('SSH user. Default: karstein.'),
+      password: z.string().optional().describe('SSH password. Default: codesys123. Also used as the sudo password if sudoPassword is omitted.'),
+      sudoPassword: z.string().optional().describe('Override the sudo password if it differs from the SSH password.'),
+      service: z.string().optional().describe('systemd unit to restart. Default: codesyscontrol.'),
+      livenessWaitSeconds: z.number().optional().describe('How long to poll for the runtime listen port to come up after restart. 0 disables the check. Default: 30.'),
+      livenessPort: z.number().optional().describe('TCP port to probe after restart. Default: 11740 (CODESYS gateway).'),
+      connectTimeoutMs: z.number().optional().describe('SSH connect/exec timeout per attempt. Default: 15000.'),
+    },
+    async (args: {
+      host?: string;
+      port?: number;
+      user?: string;
+      password?: string;
+      sudoPassword?: string;
+      service?: string;
+      livenessWaitSeconds?: number;
+      livenessPort?: number;
+      connectTimeoutMs?: number;
+    }) => {
+      try {
+        const res = await restartCodesysRuntime(args);
+        const ok = res.restartExitCode === 0 && (res.listening === true || res.listening === null);
+        return {
+          content: [{ type: 'text' as const, text: formatRestartRuntimeResult(res) }],
+          isError: !ok,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

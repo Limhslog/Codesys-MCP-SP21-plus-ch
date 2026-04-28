@@ -1,6 +1,6 @@
 {
   "name": "codesys-mcp-sp21-plus",
-  "version": "0.4.9",
+  "version": "0.5.0",
   "description": "Codesys-MCP-SP21+ -- fork of luke-harriman/Codesys-MCP carrying CODESYS V3.5 SP22 Patch 1 fixes (and forward-compat with later SPs): script-engine API drift, online/runtime tool auto-login, dual-SHA release classifier, set_pou_code omitted-decl wipe fix, add_library managed-overload, etc. MCP server for CODESYS with persistent UI instance and file-based IPC.",
   "main": "dist/server.js",
   "bin": {
@@ -39,11 +39,13 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "commander": "^11.1.0",
+    "ssh2": "^1.17.0",
     "uuid": "^9.0.0",
     "zod": "^3.24.3"
   },
   "devDependencies": {
     "@types/node": "^20.14.1",
+    "@types/ssh2": "^1.15.5",
     "@types/uuid": "^9.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.5.3",

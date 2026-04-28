@@ -339,6 +339,7 @@ Requires SSH key auth + passwordless sudo for `/usr/bin/strings` on the PLC. If 
 | `write_variable` | Write/force a variable value on the running PLC |
 | `download_to_device` | Download compiled application to PLC (attempts online change first, 120s timeout) |
 | `start_stop_application` | Start or stop the PLC application |
+| `restart_runtime_ssh` | **NEW** — SSH into a Linux PLC and restart `codesyscontrol` via password-fed `sudo -S`. After issuing `systemctl restart`, polls `ss -tln` for the runtime port (default 11740) until it actually comes up — works around `systemctl is-active` reporting "active" after the binary has died from license-demo expiry. Defaults match the codesys-pi.local Pi |
 
 ### Library Management Tools
 
