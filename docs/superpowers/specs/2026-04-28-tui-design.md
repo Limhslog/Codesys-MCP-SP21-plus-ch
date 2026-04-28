@@ -409,11 +409,10 @@ These were considered and deferred:
    v0.1 + v0.2 only.
 4. **Live values shape (v0.3):** inline next to `VAR` declarations.
    Dedicated table reserved for v0.4 dashboard.
-5. **Approve gate default:** open question — needs answer before plan.
-   Default proposal: **off by default**, opt in via
-   `--approve-edits` on the MCP server CLI, so existing scripted /
-   batch flows are not regressed and the user explicitly turns on the
-   human-in-the-loop when they want it.
+5. **Approve gate default:** **off by default**. Opt in via
+   `--approve-edits` on the MCP server CLI. Scripted / batch flows are
+   not regressed. The user turns on the human-in-the-loop explicitly
+   when they want it. Confirmed.
 
 ## Approve-mode invocation — chosen contract
 
