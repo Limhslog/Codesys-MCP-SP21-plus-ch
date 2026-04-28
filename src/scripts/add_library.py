@@ -46,6 +46,18 @@ FORCE_DUP = "{FORCE_DUP}" == "1"
 ALLOW_UNRESOLVED = "{ALLOW_UNRESOLVED}" == "1"
 
 
+def _resolve_in_repo_accessible():
+    """True iff the IDE-level library_manager global is accessible AND
+    exposes find_library. Used to distinguish 'verified missing' from
+    'could not verify' so the refuse-on-miss guard doesn't fire when we
+    just couldn't access the repository at all."""
+    try:
+        lm_global = library_manager  # noqa: F821 -- injected by scriptengine
+    except NameError:
+        return False
+    return hasattr(lm_global, 'find_library')
+
+
 def _resolve_in_repo(name):
     """Try the IDE-level library_manager.find_library(name) and return the
     ManagedLib if found, else None. Defensive against older SPs that may
@@ -216,24 +228,27 @@ try:
     # Step 1: pre-resolve the library name against the installed repository.
     # If found, we will pass the ManagedLib to add_library() to get a
     # MANAGED reference instead of a placeholder reference.
+    # Distinguish three pre-resolve outcomes:
+    #   (a) Found in repo -- proceed; will get a managed reference.
+    #   (b) Repo accessible but name NOT found -- HARD REFUSE; this is
+    #       the bricking case (add_placeholder creates a hollow ref that
+    #       fails next open). Opt-in via ALLOW_UNRESOLVED=1.
+    #   (c) Repo access failed (no library_manager global, find_library
+    #       missing, etc.) -- can't verify. Proceed cautiously and rely
+    #       on the post-add _is_resolved() check; do NOT refuse, because
+    #       a successful resolve at the IDE layer would be a false
+    #       negative for the user.
     resolved_lib = _resolve_in_repo(LIBRARY_NAME)
+    repo_accessible = _resolve_in_repo_accessible()
     if resolved_lib is not None:
         try:
             disp = getattr(resolved_lib, 'displayname', None) or LIBRARY_NAME
         except Exception:
             disp = LIBRARY_NAME
         print("DEBUG: Pre-resolved '%s' to installed library '%s'." % (LIBRARY_NAME, disp))
-    else:
+    elif repo_accessible:
+        # (b) -- we could call find_library, it returned no hit.
         print("DEBUG: Pre-resolve via library_manager.find_library returned no hit for '%s'." % LIBRARY_NAME)
-        # HARD REFUSE: if the name does not resolve in the installed
-        # library repository, do NOT add anything. The post-add
-        # _is_resolved() guard alone is insufficient -- CODESYS lets
-        # add_placeholder(name_string) create a reference where
-        # is_placeholder=False but the library is still unresolvable on
-        # next project open, bricking compile with
-        # "The placeholder library '<name>' could not be resolved."
-        # Opt-in via ALLOW_UNRESOLVED=1 for the rare case where a
-        # placeholder for a not-yet-installed library is genuinely wanted.
         if not ALLOW_UNRESOLVED:
             msg = ("Refused: library '%s' is not installed in the CODESYS library "
                    "repository (library_manager.find_library returned no hit). "
@@ -246,6 +261,13 @@ try:
             print("SCRIPT_ERROR: %s" % msg)
             sys.exit(1)
         print("DEBUG: ALLOW_UNRESOLVED=1 -- proceeding with placeholder add despite no repo hit.")
+    else:
+        # (c) -- could not access the IDE-level library manager at all.
+        # Don't refuse blindly -- proceed and rely on the post-add
+        # _is_resolved() guard at line ~309. If the resulting reference
+        # is a hollow placeholder, that guard will catch it and remove.
+        print("DEBUG: IDE library_manager not accessible from this script context. "
+              "Skipping pre-resolve check; will rely on post-add _is_resolved() guard.")
 
     # Step 2: add the reference. Default is add_placeholder() to match the
     # modern '<Name>, * (System)' convention (placeholder resolves at
