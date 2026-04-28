@@ -23,6 +23,36 @@ def _coerce_str(v):
         return None
 
 
+_JSON_INT64_MAX = 9223372036854775807  # 2**63 - 1
+
+
+def _coerce_for_json(obj):
+    """Deep-walk arbitrary message dicts/lists and coerce values that
+    json.dumps can't handle on IronPython 2.7. See compile_project.py for
+    the rationale; same helper, same shape."""
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, (int, long)):
+        try:
+            if obj > _JSON_INT64_MAX or obj < -_JSON_INT64_MAX - 1:
+                return str(obj)
+            return int(obj)
+        except Exception:
+            return str(obj)
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            try:
+                key = k if isinstance(k, str) else str(k)
+            except Exception:
+                continue
+            out[key] = _coerce_for_json(v)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [_coerce_for_json(v) for v in obj]
+    return obj
+
+
 def _build_message_entry(msg):
     entry = {}
     if hasattr(msg, 'severity'):
@@ -135,10 +165,10 @@ try:
                 print("DEBUG: system.get_messages() failed: %s" % e)
 
     try:
-        messages_json = json.dumps(messages)
+        messages_json = json.dumps(_coerce_for_json(messages))
     except TypeError as je:
         print("WARN: json.dumps raised %s -- retrying with default=str fallback" % je)
-        messages_json = json.dumps(messages, default=lambda o: str(o))
+        messages_json = json.dumps(_coerce_for_json(messages), default=lambda o: str(o))
     print("### COMPILE_MESSAGES_START ###")
     print(messages_json)
     print("### COMPILE_MESSAGES_END ###")

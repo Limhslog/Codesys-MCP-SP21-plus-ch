@@ -27,6 +27,45 @@ def _coerce_str(v):
         return None
 
 
+_JSON_INT64_MAX = 9223372036854775807  # 2**63 - 1
+
+
+def _coerce_for_json(obj):
+    """Deep-walk arbitrary message dicts/lists and coerce values that
+    json.dumps can't handle on IronPython 2.7. Specifically:
+      - bool stays bool (must come BEFORE int -- bool is a subclass).
+      - long/int that fits in System.Int64 -> int.
+      - long that exceeds Int64 -> str (avoid lossy downcast).
+      - dict/list/tuple recurse.
+      - everything else passes through; the json encoder's default=str
+        handler is the final safety net.
+    Helps the OPEN-BUGS-CROSS-REFERENCE Bug 2: 281474976710655L (severity
+    bitmask 0xFFFFFFFFFFFF) and similar CLR longs slipping through nested
+    dicts that the per-attribute coercion in _build_message_entry doesn't
+    cover."""
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, (int, long)):
+        try:
+            if obj > _JSON_INT64_MAX or obj < -_JSON_INT64_MAX - 1:
+                return str(obj)
+            return int(obj)
+        except Exception:
+            return str(obj)
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            try:
+                key = k if isinstance(k, str) else str(k)
+            except Exception:
+                continue
+            out[key] = _coerce_for_json(v)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [_coerce_for_json(v) for v in obj]
+    return obj
+
+
 def _build_message_entry(msg):
     """Extract a JSON-serializable dict from a single compile-message object.
     Centralised so both compile_project and get_compile_messages share the
@@ -156,15 +195,14 @@ try:
             except Exception as e:
                 print("DEBUG: system.get_messages() failed: %s" % e)
 
-    # Defensive json.dumps: if a stray field still slips past the coercion
-    # helpers, retry with a default=str fallback so a single odd type
-    # doesn't kill the whole emit. The default param converts unknown
-    # objects via str() instead of raising TypeError.
+    # Defensive json.dumps: deep-walk first via _coerce_for_json (handles
+    # `long` and nested CLR types that escape the per-field coercion in
+    # _build_message_entry), then dump with default=str as a final fallback.
     try:
-        messages_json = json.dumps(messages)
+        messages_json = json.dumps(_coerce_for_json(messages))
     except TypeError as je:
         print("WARN: json.dumps raised %s -- retrying with default=str fallback" % je)
-        messages_json = json.dumps(messages, default=lambda o: str(o))
+        messages_json = json.dumps(_coerce_for_json(messages), default=lambda o: str(o))
     print("### COMPILE_MESSAGES_START ###")
     print(messages_json)
     print("### COMPILE_MESSAGES_END ###")
