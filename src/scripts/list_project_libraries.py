@@ -180,6 +180,29 @@ try:
     containers = find_libman_containers(primary_project)
     print("DEBUG: %d libman container(s) found in tree." % len(containers))
 
+    # Per OPEN-BUGS-CROSS-REFERENCE Bug 3: mirror add_library.py's
+    # discovery pattern -- if the recursive walk found nothing, also try
+    # the find('Library Manager') legacy fallback. Some SPs render the
+    # has_library_manager property only on the project root, so the
+    # walk may not catch nested libmans on bare-bones projects.
+    if not containers:
+        try:
+            found_list = primary_project.find("Library Manager", True)
+            if found_list:
+                # find() returns ScriptObject wrappers around the libman
+                # itself, not the container; treat it as a libman and
+                # synthesize a pseudo-container. We append the libman
+                # directly so the consumer below can call get_library_manager()
+                # OR use the libman as-is if it already exposes
+                # references/get_libraries.
+                for libman_obj in found_list:
+                    print("DEBUG: find('Library Manager') fallback yielded %s" % type(libman_obj).__name__)
+                    containers.append(libman_obj)
+        except Exception as e:
+            print("DEBUG: find('Library Manager') fallback failed: %s" % e)
+        if not containers:
+            print("DEBUG: no libman containers via has_library_manager NOR find() fallback.")
+
     result = {
         'project': project_basename,
         'project_info': project_info,
@@ -192,10 +215,21 @@ try:
 
     for container in containers:
         container_name = safe_get(container, 'get_name', '?')
-        try:
-            lm = container.get_library_manager()
-        except Exception as e:
-            print("DEBUG: get_library_manager() failed on '%s': %s" % (container_name, e))
+        # If the find()-fallback appended a libman directly (it already
+        # has .references or .get_libraries), use it as-is. Otherwise
+        # call get_library_manager() to descend from the container.
+        lm = None
+        if hasattr(container, 'references') or hasattr(container, 'get_libraries'):
+            lm = container
+            print("DEBUG: using container '%s' as libman directly (find-fallback path)" % container_name)
+        elif hasattr(container, 'get_library_manager'):
+            try:
+                lm = container.get_library_manager()
+            except Exception as e:
+                print("DEBUG: get_library_manager() failed on '%s': %s" % (container_name, e))
+                continue
+        else:
+            print("DEBUG: container '%s' has neither references/get_libraries nor get_library_manager." % container_name)
             continue
         if lm is None:
             print("DEBUG: container '%s' returned None for get_library_manager()." % container_name)
