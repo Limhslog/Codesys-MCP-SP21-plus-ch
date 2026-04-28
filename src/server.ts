@@ -1871,14 +1871,15 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'add_library',
-    "Adds a library reference to the CODESYS project. By default uses add_placeholder() to match the modern '<Name>, * (System)' convention so transitive deps resolve at compile time -- pass direct=true to opt into the legacy direct add_library() (specific version pin). Pre-checks lm.references for an existing reference with the same name and no-ops with a confirmation message unless force=true. The library must be installed in the CODESYS library repository.",
+    "Adds a library reference to the CODESYS project. **Refuses upfront** if the library name does not resolve in the installed library repository (Tools > Library Repository) -- this prevents the silent-broken-placeholder bug where add_placeholder() creates a hollow reference that bricks the next project open with 'placeholder library X could not be resolved'. Install the library first (Library Repository for stock libs, CODESYS Installer for SL/add-on packages), or pass allowUnresolved=true to opt into the dangerous behaviour. Default add path is add_placeholder() for the modern '<Name>, * (System)' convention; pass direct=true for the legacy specific-version pin. Pre-checks lm.references and no-ops with a confirmation message if a reference with the same name already exists, unless force=true.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
-      libraryName: z.string().describe("Name of the library to add (e.g., 'Standard', 'Util', 'CAA Memory')."),
+      libraryName: z.string().describe("Name of the library to add (e.g., 'Standard', 'Util', 'CAA Memory'). Must match exactly an installed library in the CODESYS Library Repository unless allowUnresolved=true."),
       direct: z.boolean().optional().describe("If true, use direct add_library() (specific-version pin) instead of the default add_placeholder() (resolves at compile)."),
       force: z.boolean().optional().describe("If true, add even if a reference with the same name already exists (creates a duplicate). Default: dedup -- silently no-op with a confirmation message."),
+      allowUnresolved: z.boolean().optional().describe("DANGEROUS. If true, skip the pre-flight 'is this library installed?' check and add a placeholder anyway. Will brick the next project open if the library is genuinely not installed. Only use when you intentionally want a placeholder for a not-yet-installed library."),
     },
-    async (args: { projectFilePath: string; libraryName: string; direct?: boolean; force?: boolean }) => {
+    async (args: { projectFilePath: string; libraryName: string; direct?: boolean; force?: boolean; allowUnresolved?: boolean }) => {
       const escaped = resolvePath(args.projectFilePath, workspaceDir);
       const script = scriptManager.prepareScriptWithHelpers(
         'add_library',
@@ -1887,6 +1888,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
           LIBRARY_NAME: args.libraryName.trim(),
           USE_DIRECT: args.direct ? '1' : '0',
           FORCE_DUP: args.force ? '1' : '0',
+          ALLOW_UNRESOLVED: args.allowUnresolved ? '1' : '0',
         },
         ['ensure_project_open']
       );

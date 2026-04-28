@@ -43,6 +43,7 @@ import sys, scriptengine as script_engine, os, traceback
 LIBRARY_NAME = "{LIBRARY_NAME}"
 USE_DIRECT = "{USE_DIRECT}" == "1"
 FORCE_DUP = "{FORCE_DUP}" == "1"
+ALLOW_UNRESOLVED = "{ALLOW_UNRESOLVED}" == "1"
 
 
 def _resolve_in_repo(name):
@@ -224,6 +225,27 @@ try:
         print("DEBUG: Pre-resolved '%s' to installed library '%s'." % (LIBRARY_NAME, disp))
     else:
         print("DEBUG: Pre-resolve via library_manager.find_library returned no hit for '%s'." % LIBRARY_NAME)
+        # HARD REFUSE: if the name does not resolve in the installed
+        # library repository, do NOT add anything. The post-add
+        # _is_resolved() guard alone is insufficient -- CODESYS lets
+        # add_placeholder(name_string) create a reference where
+        # is_placeholder=False but the library is still unresolvable on
+        # next project open, bricking compile with
+        # "The placeholder library '<name>' could not be resolved."
+        # Opt-in via ALLOW_UNRESOLVED=1 for the rare case where a
+        # placeholder for a not-yet-installed library is genuinely wanted.
+        if not ALLOW_UNRESOLVED:
+            msg = ("Refused: library '%s' is not installed in the CODESYS library "
+                   "repository (library_manager.find_library returned no hit). "
+                   "Install it via the Library Repository (Tools > Library Repository, "
+                   "or via CODESYS Installer for SL/add-on packages) before re-running, "
+                   "or pass allowUnresolved=true if you really want a placeholder for "
+                   "a not-yet-installed library."
+                   % LIBRARY_NAME)
+            print("ERROR: %s" % msg)
+            print("SCRIPT_ERROR: %s" % msg)
+            sys.exit(1)
+        print("DEBUG: ALLOW_UNRESOLVED=1 -- proceeding with placeholder add despite no repo hit.")
 
     # Step 2: add the reference. Default is add_placeholder() to match the
     # modern '<Name>, * (System)' convention (placeholder resolves at
