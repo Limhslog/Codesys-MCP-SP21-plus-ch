@@ -113,6 +113,7 @@ describe('E2E Script Preparation', () => {
         LIBRARY_NAME: 'Util',
         USE_DIRECT: '0',
         FORCE_DUP: '0',
+        ALLOW_UNRESOLVED: '0',
       },
       ['ensure_project_open']
     );
@@ -212,6 +213,194 @@ describe('E2E Script Preparation', () => {
       'create_project', 'create_property', 'ensure_project_open',
       'find_object_by_path', 'get_pou_code', 'get_project_structure',
       'open_project', 'save_project', 'set_pou_code', 'watcher',
+    ];
+    for (const name of scriptNames) {
+      expect(() => mgr.loadTemplate(name)).not.toThrow();
+      const content = mgr.loadTemplate(name);
+      expect(content.length).toBeGreaterThan(0);
+    }
+  });
+
+  // ─── Symbol Configuration tools ──────────────────────────────────────
+  // Each new tool: assert the rendered script substitutes every {PLACEHOLDER},
+  // pulls in find_symbol_config_object helper, and emits SCRIPT_SUCCESS.
+
+  const SYMCONF_HELPERS = ['ensure_project_open', 'find_symbol_config_object'];
+
+  it('find_symbol_config script renders cleanly with helpers', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'find_symbol_config',
+      { PROJECT_FILE_PATH: 'C:\\test.project' },
+      SYMCONF_HELPERS
+    );
+    expect(script).toContain('def find_all_symbol_config_objects');
+    expect(script).toContain('def symbol_config_path');
+    expect(script).toContain('SYMBOL_CONFIG_FIND_START');
+    expect(script).toContain('SCRIPT_SUCCESS');
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('list_all_signatures honours COMPILE_FLAG=1 to force a build', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'list_all_signatures',
+      { PROJECT_FILE_PATH: 'C:\\test.project', COMPILE_FLAG: '1' },
+      SYMCONF_HELPERS
+    );
+    expect(script).toContain('COMPILE_FLAG = "1"');
+    expect(script).toContain('get_all_signatures');
+    expect(script).toContain('def ensure_symbol_config');
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('list_all_datatypes honours COMPILE_FLAG=0 (cached)', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'list_all_datatypes',
+      { PROJECT_FILE_PATH: 'C:\\test.project', COMPILE_FLAG: '0' },
+      SYMCONF_HELPERS
+    );
+    expect(script).toContain('COMPILE_FLAG = "0"');
+    expect(script).toContain('get_all_datatypes');
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('list_configured_symbols renders both signature + datatype paths', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'list_configured_symbols',
+      { PROJECT_FILE_PATH: 'C:\\test.project' },
+      SYMCONF_HELPERS
+    );
+    expect(script).toContain('get_only_configured_signatures');
+    expect(script).toContain('get_only_configured_datatypes');
+    expect(script).toContain('configured_access');
+    expect(script).toContain('maximal_access');
+    expect(script).toContain('effective_access');
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('get_symbol_config_settings reads every documented knob', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'get_symbol_config_settings',
+      { PROJECT_FILE_PATH: 'C:\\test.project' },
+      SYMCONF_HELPERS
+    );
+    expect(script).toContain('content_feature_flags');
+    expect(script).toContain('symbol_attribute_filter_type');
+    expect(script).toContain('symbol_comment_filter_type');
+    expect(script).toContain('enable_direct_io_access');
+    expect(script).toContain('client_side_layout_calculator');
+    expect(script).toContain('check_effective_direct_io_access');
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('create_symbol_config emits the application.create_symbol_config call + idempotency check', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'create_symbol_config',
+      {
+        PROJECT_FILE_PATH: 'C:\\test.project',
+        APPLICATION_PATH: 'Application',
+        EXPORT_COMMENTS_TO_XML: '1',
+        SUPPORT_OPC_UA: '1',
+        LAYOUT_CALCULATOR: 'compatibility',
+      },
+      [...SYMCONF_HELPERS, 'find_object_by_path']
+    );
+    expect(script).toContain('application.create_symbol_config');
+    expect(script).toContain('Symbol Configuration already exists');
+    expect(script).toContain('def find_object_by_path_robust');
+    expect(script).toContain('LAYOUT_CALCULATOR = "compatibility"');
+    expect(script).toContain('APPLICATION_PATH = "Application"');
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('set_symbol_config_settings only applies fields whose APPLY_* flag is 1', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'set_symbol_config_settings',
+      {
+        PROJECT_FILE_PATH: 'C:\\test.project',
+        APPLY_CONTENT_FLAGS: '1',
+        CONTENT_FLAGS_INT: '7',
+        APPLY_ATTR_FILTER_TYPE: '0',
+        ATTR_FILTER_TYPE: 'None',
+        APPLY_ATTR_FILTER_DATA: '0',
+        ATTR_FILTER_DATA: '',
+        APPLY_COMMENT_FILTER_TYPE: '0',
+        COMMENT_FILTER_TYPE: 'None',
+        APPLY_DIRECT_IO: '0',
+        DIRECT_IO: '0',
+        APPLY_LAYOUT: '0',
+        LAYOUT_CALCULATOR: 'compatibility',
+      },
+      SYMCONF_HELPERS
+    );
+    expect(script).toContain('APPLY_CONTENT_FLAGS = "1" == \'1\'');
+    expect(script).toContain('CONTENT_FLAGS_INT = "7"');
+    expect(script).toContain('APPLY_ATTR_FILTER_TYPE = "0" == \'1\'');
+    expect(script).toContain('Refusing to enable direct I/O access');
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('set_symbol_access emits the configured_access setter and access enum probe', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'set_symbol_access',
+      {
+        PROJECT_FILE_PATH: 'C:\\test.project',
+        SIGNATURE_FQN: 'Application.PLC_PRG',
+        VARIABLE_NAME: 'nCounter',
+        ACCESS: 'ReadWrite',
+        LIBRARY_ID: '',
+        ENSURE_CONFIGURED: '1',
+      },
+      SYMCONF_HELPERS
+    );
+    expect(script).toContain('SIGNATURE_FQN = r"Application.PLC_PRG"');
+    expect(script).toContain('VARIABLE_NAME = r"nCounter"');
+    expect(script).toContain('ACCESS = "ReadWrite"');
+    expect(script).toContain('configured_access = requested_access');
+    expect(script).toContain('SymbolAccess');
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('set_signature_access_bulk walks every variable in the signature', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'set_signature_access_bulk',
+      {
+        PROJECT_FILE_PATH: 'C:\\test.project',
+        SIGNATURE_FQN: 'Application.PLC_PRG',
+        ACCESS: 'ReadOnly',
+        LIBRARY_ID: '',
+      },
+      SYMCONF_HELPERS
+    );
+    expect(script).toContain('for v in sig.variables');
+    expect(script).toContain('changed.append');
+    expect(script).toContain('skipped.append');
+    expect(script).toContain('ACCESS = "ReadOnly"');
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('export_symbol_xsd writes bytes and refuses on missing parent dir', () => {
+    const script = mgr.prepareScriptWithHelpers(
+      'export_symbol_xsd',
+      {
+        PROJECT_FILE_PATH: 'C:\\test.project',
+        OUTPUT_FILE_PATH: 'C:\\out.xsd',
+      },
+      SYMCONF_HELPERS
+    );
+    expect(script).toContain('get_symbol_configuration_xsd');
+    expect(script).toContain('Parent directory does not exist');
+    expect(script).toContain('OUTPUT_FILE_PATH = r"C:\\out.xsd"');
+    expect(script).toContain("open(OUTPUT_FILE_PATH, 'wb')");
+    expect(script).not.toMatch(/\{[A-Z_]+\}/);
+  });
+
+  it('every symbol config script template loads without error', () => {
+    const scriptNames = [
+      'find_symbol_config', 'list_all_signatures', 'list_all_datatypes',
+      'list_configured_symbols', 'get_symbol_config_settings',
+      'create_symbol_config', 'set_symbol_config_settings',
+      'set_symbol_access', 'set_signature_access_bulk', 'export_symbol_xsd',
+      'find_symbol_config_object',
     ];
     for (const name of scriptNames) {
       expect(() => mgr.loadTemplate(name)).not.toThrow();

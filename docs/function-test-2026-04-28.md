@@ -64,4 +64,49 @@ yet):
 
 ---
 
-*Function test executed against this fork @ HEAD `f34d002` on 2026-04-28.*
+## Symbol Configuration tools (added 2026-04-28 evening)
+
+Ten new tools wrap `ScriptSymbolConfigObject` (CODESYS 3.5.10.0+) per the plan in `docs/superpowers/plans/2026-04-28-symbol-config-tools.md`. Status of each:
+
+| # | Tool                          | Vitest | Live SP22 | Notes |
+|---|-------------------------------|--------|-----------|-------|
+| 1 | `find_symbol_config`          | OK     | pending   | Template-prep test asserts marker-walk + path serialiser |
+| 2 | `list_all_signatures`         | OK     | pending   | `compile=true/false` both rendered |
+| 3 | `list_all_datatypes`          | OK     | pending   | Mirror of #2 over `get_all_datatypes()` |
+| 4 | `list_configured_symbols`     | OK     | pending   | Walks signatures + datatypes; serialises `configured_access` / `maximal_access` / `effective_access` per variable |
+| 5 | `get_symbol_config_settings`  | OK     | pending   | All 6 knobs + obstacle explanations + available layout calculators |
+| 6 | `create_symbol_config`        | OK     | pending   | Idempotent (refuse-with-success if already present); `application.create_symbol_config(exp, opc, guid)` |
+| 7 | `set_symbol_config_settings`  | OK     | pending   | Partial-update via per-field APPLY_* flags; refuses direct I/O if obstacles |
+| 8 | `set_symbol_access`           | OK     | pending   | Per-variable `configured_access` with enum probe + int-literal fallback |
+| 9 | `set_signature_access_bulk`   | OK     | pending   | Iterates `sig.variables`, reports `changed` + `skipped` |
+|10 | `export_symbol_xsd`           | OK     | pending   | `get_symbol_configuration_xsd()` bytes -> file (UTF-8) |
+
+**Vitest column**: `tests/integration/e2e.test.ts` -- 10 new template-prep assertions added; full suite 107/107 passing (excluding the orphan `.worktrees/phobics-tui` suite). Each test renders the script with realistic placeholders and asserts:
+  - no leftover `{PLACEHOLDER}` in the rendered output,
+  - the documented CODESYS API methods are referenced (`get_all_signatures`, `application.create_symbol_config`, `configured_access`, etc.),
+  - the helper functions are pulled in (`find_symbol_config_object`, `ensure_symbol_config`, `symbol_config_path`).
+  - additionally Python 3 `ast.parse` was run against every script to catch any IronPython 2.7 syntax that Py3 would also flag.
+
+**Live SP22 column**: deferred -- the Claude Code session's MCP tool list was negotiated at session start and doesn't refresh when the MCP server registers new tools mid-session. To run the live cycle, start a new Claude Code session (the symlinked global npm package will pick up the new build automatically) and execute the round-trip from the plan:
+
+```
+1. mcp__codesys__open_project MCPTest2.project
+2. mcp__codesys__find_symbol_config           -- expect count=0
+3. mcp__codesys__create_symbol_config Application
+4. mcp__codesys__find_symbol_config           -- expect count=1
+5. mcp__codesys__get_symbol_config_settings   -- assert OPC UA on, comment Both
+6. mcp__codesys__set_symbol_config_settings contentFeatureFlags=['SupportOPCUA','IncludeComments','IncludeExecutables']
+7. mcp__codesys__list_all_signatures compile=true
+8. mcp__codesys__list_configured_symbols      -- expect empty
+9. mcp__codesys__set_signature_access_bulk Application.PLC_PRG ReadWrite
+10. mcp__codesys__list_configured_symbols     -- expect PLC_PRG vars exposed
+11. mcp__codesys__set_symbol_access Application.PLC_PRG nCounter None
+12. mcp__codesys__export_symbol_xsd outputFilePath=C:\\Temp\\sc.xsd
+13. mcp__codesys__delete_object Application/<symbol-config-name>
+```
+
+The plan also calls out the `SymbolAccess` enum-value probe risk: the SP22 stub references `SymbolAccess` but doesn't declare it inline; the access scripts try the enum class first then fall back to the well-known int literal mapping (`None=0`, `ReadOnly=1`, `WriteOnly=2`, `ReadWrite=3`). A divergent SP would surface a clear error rather than silently corrupt state.
+
+---
+
+*Function test executed against this fork @ HEAD `f34d002` on 2026-04-28; symbol-config tools added in `db688c2` and verified via vitest the same evening.*

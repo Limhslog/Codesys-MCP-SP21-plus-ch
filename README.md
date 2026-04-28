@@ -291,7 +291,7 @@ Requires SSH key auth + passwordless sudo for `/usr/bin/strings` on the PLC. If 
 
 ## MCP Tools
 
-31 tools across the categories below. Tools marked **NEW** were added in this fork; tools marked **FIXED** existed upstream but were broken before this fork.
+41 tools across the categories below. Tools marked **NEW** were added in this fork; tools marked **FIXED** existed upstream but were broken before this fork.
 
 ### Management Tools
 
@@ -347,6 +347,23 @@ Requires SSH key auth + passwordless sudo for `/usr/bin/strings` on the PLC. If 
 |------|-------------|
 | `list_project_libraries` | List all libraries referenced in the project with version info, plus IDE version, devices, and per-Application compiler version (**FIXED** — switched to `ScriptLibManObjectContainer`) |
 | `add_library` | Add a library reference. Pre-resolves via `library_manager.find_library` and prefers the managed-library overload; refuses to save if the resulting reference is an unresolvable placeholder (**hardened**) |
+
+### Symbol Configuration Tools (**NEW**)
+
+Wraps `ScriptSymbolConfigObject` (CODESYS 3.5.10.0+). The Symbol Configuration object controls which IEC variables / FBs / methods are exposed to OPC UA, web visualisations, and other external clients. Reference: helpme-codesys.com/en/ScriptingEngine/ScriptSymbolConfigObject.html and the SP22 stub `Stubs/scriptengine/ScriptSymbolConfigObject.pyi`.
+
+| Tool | Description |
+|------|-------------|
+| `find_symbol_config` | **NEW** — Locate the Symbol Configuration object(s) in the project tree (one per Application typically). Read-only |
+| `list_all_signatures` | **NEW** — Every POU / FunctionBlock / Method / Function the symbol config could potentially export. `compile=true` forces an `application.build()` first |
+| `list_all_datatypes` | **NEW** — Every DUT / struct / enum / alias / union (same `compile` semantics) |
+| `list_configured_symbols` | **NEW** — Only those signatures + datatypes actually configured for export, with each variable's `configured_access` / `maximal_access` / `effective_access` |
+| `get_symbol_config_settings` | **NEW** — Read every knob: `content_feature_flags` (OPC UA / IncludeComments / IncludeAttributes / IncludeExecutables / etc.), attribute filter, comment filter, direct I/O access (+ obstacles), client-side layout calculator |
+| `create_symbol_config` | **NEW** — `application.create_symbol_config(...)` under a chosen Application. Idempotent: no-ops with success if a symbol config already exists anywhere in the tree |
+| `set_symbol_config_settings` | **NEW** — Partial-update of any subset of the 6 knobs. Refuses to enable direct I/O if `check_effective_direct_io_access()` reports obstacles |
+| `set_symbol_access` | **NEW** — Per-variable `configured_access` setter (`None` / `ReadOnly` / `WriteOnly` / `ReadWrite`). Locates the signature by FQN; works on not-yet-configured variables too |
+| `set_signature_access_bulk` | **NEW** — Set every variable in one signature to the same access in one call |
+| `export_symbol_xsd` | **NEW** — Write the schema bytes from `get_symbol_configuration_xsd()` to a file (UTF-8). Useful for downstream XML validation in CI |
 
 ### Version Anchor + Release Pipeline (**NEW**)
 
@@ -451,7 +468,7 @@ npm run test:watch
 ```
 src/
   bin.ts              CLI entry point
-  server.ts           MCP tool/resource registration (31 tools, 3 resources)
+  server.ts           MCP tool/resource registration (41 tools, 3 resources)
   launcher.ts         CODESYS process management
   ipc.ts              File-based IPC transport
   headless.ts         Headless fallback executor
