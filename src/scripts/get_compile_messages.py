@@ -106,39 +106,35 @@ def _build_message_entry(msg, category_name=None):
 
 
 def _enumerate_categories(script_engine_arg):
-    """Returns a list of (label, category_obj_or_guid_or_None). Always
-    includes a (None, None) sentinel for the no-filter call."""
+    """Returns a list of (label, category_guid_or_None) tuples for every
+    message category the IDE exposes plus a (None, None) sentinel for the
+    no-filter call.
+
+    Discovery path: script_engine.system.get_message_categories() (the
+    METHOD) returns the live List[Guid]. script_engine.system.get_message_category_description(guid)
+    gives the human-readable label per category. See compile_project.py
+    for the verified-on-SP22 history note."""
     cats = [('<default-no-filter>', None)]
+    se_sys = getattr(script_engine_arg, 'system', None)
+    if se_sys is None or not hasattr(se_sys, 'get_message_categories'):
+        return cats
     try:
-        se_sys = getattr(script_engine_arg, 'system', None)
-        if se_sys is not None:
-            mc = getattr(se_sys, 'message_categories', None)
-            if mc is not None:
-                try:
-                    for c in mc:
-                        try:
-                            label = (
-                                _coerce_str(getattr(c, 'name', None))
-                                or _coerce_str(getattr(c, 'guid', None))
-                                or _coerce_str(c)
-                                or '<unnamed>'
-                            )
-                            cats.append((label, c))
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    # Well-known V3.5 category GUIDs (probed as fallback strings).
-    well_known = [
-        ('Compile (well-known GUID)', '90F1B997-7AB7-4B11-B637-D55D71BC4F2A'),
-        ('Build (well-known GUID)',   '7390398F-1B2F-4B30-B6E2-37F2BB7B57E0'),
-        ('Online (well-known GUID)',  '15F65557-DC73-4193-B7F2-EFF5A2A6C10C'),
-        ('LibMan (well-known GUID)',  '0B8D54FB-C68A-43F9-9B4D-79DBE1F8DF44'),
-    ]
-    for lbl, g in well_known:
-        cats.append((lbl, g))
+        guids = se_sys.get_message_categories()
+    except Exception as e:
+        print("DEBUG: get_message_categories() raised: %s" % e)
+        return cats
+    if guids is None:
+        return cats
+    for g in guids:
+        label = None
+        try:
+            if hasattr(se_sys, 'get_message_category_description'):
+                label = _coerce_str(se_sys.get_message_category_description(g))
+        except Exception:
+            label = None
+        if not label:
+            label = _coerce_str(g) or '<unnamed>'
+        cats.append((label, g))
     return cats
 
 
