@@ -1,5 +1,5 @@
 /**
- * MCP Server — registers tools and resources for CODESYS automation.
+ * MCP Server 鈥?registers tools and resources for CODESYS automation.
  * Supports persistent (watcher-based) and headless (spawn-per-command) modes.
  */
 
@@ -602,7 +602,16 @@ function fromBase64Utf8(payload: string): string | null {
   try {
     const trimmed = payload.trim();
     if (!trimmed) return '';
-    return Buffer.from(trimmed, 'base64').toString('utf-8');
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) || trimmed.length % 4 === 1) {
+      throw new Error('payload is not valid base64');
+    }
+    const decoded = Buffer.from(trimmed, 'base64');
+    const canonicalInput = trimmed.replace(/=+$/, '');
+    const canonicalDecoded = decoded.toString('base64').replace(/=+$/, '');
+    if (canonicalInput !== canonicalDecoded) {
+      throw new Error('payload failed base64 round-trip validation');
+    }
+    return decoded.toString('utf-8');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     serverLog.warn(`Invalid base64 UTF-8 payload while parsing get_pou_code output: ${msg}`);
@@ -611,24 +620,69 @@ function fromBase64Utf8(payload: string): string | null {
 }
 
 /**
- * Parse the marker-bracketed JSON payload emitted by get_all_pou_code.py.
+ * Parse the payload emitted by get_all_pou_code.py.
  *
- * The script writes:
+ * Preferred transport:
+ *   ### ALL_POU_CODE_EXPORT_PATH_B64_START ###
+ *   <base64(utf-8) absolute export path>
+ *   ### ALL_POU_CODE_EXPORT_PATH_B64_END ###
+ *
+ * Node then reads the PLCopenXML file directly from disk, matching
+ * export_plcopen_xml's byte-exact path and avoiding Windows stdout/codepage
+ * corruption for large Chinese payloads.
+ *
+ * Legacy transport remains supported for backward compatibility:
  *   ### ALL_POU_CODE_START ###
  *   <json>
  *   ### ALL_POU_CODE_END ###
- *
- * where <json> is produced with `json.dumps(..., ensure_ascii=True)`, so
- * non-ASCII (Chinese comments etc.) rides as \uXXXX escapes through the
- * watcher's stdout buffer; `JSON.parse` on this side decodes them back to
- * real Unicode strings. Two failure modes are surfaced separately so the
- * tool caller can give the user a useful error message.
  */
+interface AllPouCodeEntriesPayload {
+  kind: 'entries';
+  entries: PouEntry[];
+}
+
+interface AllPouCodeXmlPayload {
+  kind: 'xml';
+  xml: string;
+}
+
+interface AllPouCodeExportPathPayload {
+  kind: 'export_path';
+  exportPath: string;
+}
+
+type AllPouCodePayload =
+  | AllPouCodeEntriesPayload
+  | AllPouCodeXmlPayload
+  | AllPouCodeExportPathPayload;
+
 export type ParseAllPouCodeResult =
-  | { ok: true; entries: PouEntry[] }
-  | { ok: false; reason: 'missing_markers' | 'json_parse_failed' };
+  | { ok: true; payload: AllPouCodePayload }
+  | { ok: false; reason: 'missing_markers' | 'json_parse_failed' | 'path_decode_failed' };
+
+function readUtf8FileStripBom(filePath: string): string {
+  let text = fs.readFileSync(filePath, 'utf-8');
+  if (text.charCodeAt(0) === 0xfeff) {
+    text = text.slice(1);
+  }
+  return text;
+}
 
 export function parseAllPouCodeOutput(output: string): ParseAllPouCodeResult {
+  const exportPathStartMarker = '### ALL_POU_CODE_EXPORT_PATH_B64_START ###';
+  const exportPathEndMarker = '### ALL_POU_CODE_EXPORT_PATH_B64_END ###';
+  const exportPathStartIdx = output.indexOf(exportPathStartMarker);
+  const exportPathEndIdx = output.indexOf(exportPathEndMarker);
+  if (exportPathStartIdx !== -1 && exportPathEndIdx !== -1 && exportPathStartIdx < exportPathEndIdx) {
+    const decodedPath = fromBase64Utf8(
+      output.substring(exportPathStartIdx + exportPathStartMarker.length, exportPathEndIdx)
+    );
+    if (decodedPath === null) {
+      return { ok: false, reason: 'path_decode_failed' };
+    }
+    return { ok: true, payload: { kind: 'export_path', exportPath: decodedPath } };
+  }
+
   const startMarker = '### ALL_POU_CODE_START ###';
   const endMarker = '### ALL_POU_CODE_END ###';
   const startIdx = output.indexOf(startMarker);
@@ -638,7 +692,29 @@ export function parseAllPouCodeOutput(output: string): ParseAllPouCodeResult {
   }
   const jsonStr = output.substring(startIdx + startMarker.length, endIdx).trim();
   try {
-    return { ok: true, entries: JSON.parse(jsonStr) as PouEntry[] };
+    const parsed = JSON.parse(jsonStr) as unknown;
+    if (Array.isArray(parsed)) {
+      return { ok: true, payload: { kind: 'entries', entries: parsed as PouEntry[] } };
+    }
+    if (parsed && typeof parsed === 'object') {
+      const xml = (parsed as { xml?: unknown }).xml;
+      if (typeof xml === 'string') {
+        return { ok: true, payload: { kind: 'xml', xml } };
+      }
+      const exportPath = (parsed as { exportPath?: unknown }).exportPath;
+      if (typeof exportPath === 'string') {
+        return { ok: true, payload: { kind: 'export_path', exportPath } };
+      }
+      const exportPathB64 = (parsed as { exportPathB64?: unknown }).exportPathB64;
+      if (typeof exportPathB64 === 'string') {
+        const decodedPath = fromBase64Utf8(exportPathB64);
+        if (decodedPath === null) {
+          return { ok: false, reason: 'path_decode_failed' };
+        }
+        return { ok: true, payload: { kind: 'export_path', exportPath: decodedPath } };
+      }
+    }
+    return { ok: false, reason: 'json_parse_failed' };
   } catch {
     return { ok: false, reason: 'json_parse_failed' };
   }
@@ -654,15 +730,32 @@ export function parseAllPouCodeOutput(output: string): ParseAllPouCodeResult {
  *     stdout would otherwise mangle them.
  *   - Legacy plain-text markers ### POU DECLARATION START/END ### etc., kept
  *     as a fallback when the script falls back to legacy emission. \n inside
- *     legacy markers are unescaped on this side.
+ *     legacy markers are unescaped on this side, and we strip only the single
+ *     framing newline pair added by the marker print calls.
  *
  * b64 markers take precedence per side (decl and impl decided independently).
  * Sentinel strings are returned when a side's markers are absent so the
- * caller can render them in the UI.
+ * caller can render them in the UI. The b64 path preserves declaration /
+ * implementation bytes exactly as emitted by the Python side.
  */
 export interface PouCodeParts {
   declaration: string;
   implementation: string;
+}
+
+function stripMarkerFramingLineBreaks(payload: string): string {
+  let text = payload.replace(/\\n/g, '\n');
+  if (text.startsWith('\r\n')) {
+    text = text.slice(2);
+  } else if (text.startsWith('\n')) {
+    text = text.slice(1);
+  }
+  if (text.endsWith('\r\n')) {
+    text = text.slice(0, -2);
+  } else if (text.endsWith('\n')) {
+    text = text.slice(0, -1);
+  }
+  return text;
 }
 
 export function parsePouCodeOutput(output: string): PouCodeParts {
@@ -682,12 +775,12 @@ export function parsePouCodeOutput(output: string): PouCodeParts {
   const dbe = output.indexOf(declB64End);
   if (dbs !== -1 && dbe !== -1 && dbs < dbe) {
     const decoded = fromBase64Utf8(output.substring(dbs + declB64Start.length, dbe));
-    if (decoded !== null) declaration = decoded.trim();
+    if (decoded !== null) declaration = decoded;
   } else {
     const ds = output.indexOf(declStart);
     const de = output.indexOf(declEnd);
     if (ds !== -1 && de !== -1 && ds < de) {
-      declaration = output.substring(ds + declStart.length, de).replace(/\\n/g, '\n').trim();
+      declaration = stripMarkerFramingLineBreaks(output.substring(ds + declStart.length, de));
     }
   }
 
@@ -695,12 +788,12 @@ export function parsePouCodeOutput(output: string): PouCodeParts {
   const ibe = output.indexOf(implB64End);
   if (ibs !== -1 && ibe !== -1 && ibs < ibe) {
     const decoded = fromBase64Utf8(output.substring(ibs + implB64Start.length, ibe));
-    if (decoded !== null) implementation = decoded.trim();
+    if (decoded !== null) implementation = decoded;
   } else {
     const is_ = output.indexOf(implStart);
     const ie = output.indexOf(implEnd);
     if (is_ !== -1 && ie !== -1 && is_ < ie) {
-      implementation = output.substring(is_ + implStart.length, ie).replace(/\\n/g, '\n').trim();
+      implementation = stripMarkerFramingLineBreaks(output.substring(is_ + implStart.length, ie));
     }
   }
 
@@ -1009,7 +1102,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
   // TS2589 deep type instantiation with MCP SDK generics + Zod.
   const s = server as any;
 
-  // ─── Management Tools ────────────────────────────────────────────────
+  // 鈹€鈹€鈹€ Management Tools 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   s.tool(
     'launch_codesys',
@@ -1149,7 +1242,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     async () => buildGetUserSelectionResponse(defaultStateFilePath())
   );
 
-  // ─── Project Tools ───────────────────────────────────────────────────
+  // 鈹€鈹€鈹€ Project Tools 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   s.tool(
     'open_project',
@@ -1287,7 +1380,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── POU Tools ───────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€ POU Tools 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   s.tool(
     'create_pou',
@@ -1611,11 +1704,11 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Project Structure Tools ──────────────────────────────────────────
+  // 鈹€鈹€鈹€ Project Structure Tools 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   s.tool(
     'create_dut',
-    'Creates a new Data Unit Type (DUT) — structure, enumeration, union, or alias — within the specified CODESYS project.',
+    'Creates a new Data Unit Type (DUT) 鈥?structure, enumeration, union, or alias 鈥?within the specified CODESYS project.',
     {
       projectFilePath: z.string().describe("Path to the project file."),
       name: z.string().describe("Name for the new DUT (must be a valid IEC identifier)."),
@@ -1961,24 +2054,40 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
             type: 'text' as const,
             text: parsed.reason === 'missing_markers'
               ? 'Could not parse POU code output.'
-              : 'Failed to parse POU code JSON.',
+              : parsed.reason === 'path_decode_failed'
+                ? 'Failed to decode the exported PLCopenXML path.'
+                : 'Failed to parse POU code JSON.',
           }],
           isError: true,
         };
       }
 
-      const allCode = parsed.entries;
-      // New PLCopenXML-export schema (root fix step 1, Limhslog 9ee7eb3): the
-      // Python script returns {source:"plcopen_xml_export", xml:"<full XML>"}
-      // instead of a POU array. Pass the XML straight through -- the client
-      // parses PLCopenXML to extract POUs. This bypasses the IronPython
-      // .text marshalling layer that mojibakes Chinese on Chinese Windows.
-      if (allCode && !Array.isArray(allCode) && typeof (allCode as any).xml === 'string') {
+      if (parsed.payload.kind === 'export_path') {
+        try {
+          return {
+            content: [{ type: 'text' as const, text: readUtf8FileStripBom(parsed.payload.exportPath) }],
+            isError: false,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Failed to read exported PLCopenXML file: ${msg}`,
+            }],
+            isError: true,
+          };
+        }
+      }
+
+      if (parsed.payload.kind === 'xml') {
         return {
-          content: [{ type: 'text' as const, text: (allCode as any).xml }],
+          content: [{ type: 'text' as const, text: parsed.payload.xml }],
           isError: false,
         };
       }
+
+      const allCode = parsed.payload.entries;
       if (allCode.length === 0) {
         return {
           content: [{ type: 'text' as const, text: 'No POUs with code found in the project.' }],
@@ -2004,7 +2113,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Online/Runtime Tools ─────────────────────────────────────────────
+  // 鈹€鈹€鈹€ Online/Runtime Tools 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   s.tool(
     'connect_to_device',
@@ -2153,7 +2262,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Online Runtime Tools (SP21 coverage phase 1) ────────────────────
+  // 鈹€鈹€鈹€ Online Runtime Tools (SP21 coverage phase 1) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // API: SP21 ScriptOnline.pyi (ScriptOnlineApplication / ScriptOnlineDevice),
   // semantics: helpme-codesys.com/en/ScriptingEngine/ScriptOnline.html
 
@@ -2170,7 +2279,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'reset_application',
-    "Resets the online application. 'warm' keeps retain variables, 'cold' clears retains but keeps persistents, 'origin' (ResetOption.Original) erases all variables AND the application from the device — destructive, ask the user before using 'origin'. Clears all breakpoints. Must be connected first (connect_to_device).",
+    "Resets the online application. 'warm' keeps retain variables, 'cold' clears retains but keeps persistents, 'origin' (ResetOption.Original) erases all variables AND the application from the device 鈥?destructive, ask the user before using 'origin'. Clears all breakpoints. Must be connected first (connect_to_device).",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       level: z.enum(['warm', 'cold', 'origin']).describe("Reset level: warm (keep retains), cold (clear retains), origin (erase application from device)."),
@@ -2319,7 +2428,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'create_boot_application',
-    "Creates a boot application. online=true: creates it directly ON the connected device (survives reboot). online=false (default): writes an offline .app boot file (outputPath, or '<application>.app' next to the project) — requires the project to be compiled first (compile_project).",
+    "Creates a boot application. online=true: creates it directly ON the connected device (survives reboot). online=false (default): writes an offline .app boot file (outputPath, or '<application>.app' next to the project) 鈥?requires the project to be compiled first (compile_project).",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       online: z.boolean().optional().describe("true = create on the connected device; false/omitted = write offline .app file."),
@@ -2459,7 +2568,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'plc_file_delete',
-    "Deletes a file (or directory) on the connected PLC's filesystem. DESTRUCTIVE — confirm with the user before deleting anything you did not create. Must be connected first.",
+    "Deletes a file (or directory) on the connected PLC's filesystem. DESTRUCTIVE 鈥?confirm with the user before deleting anything you did not create. Must be connected first.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       plcPath: z.string().describe("Remote path on the PLC to delete."),
@@ -2483,7 +2592,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Project Lifecycle & Interop Tools (SP21 coverage phase 2) ───────
+  // 鈹€鈹€鈹€ Project Lifecycle & Interop Tools (SP21 coverage phase 2) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // API: SP21 ScriptProject.pyi; semantics:
   // helpme-codesys.com/en/ScriptingEngine/ScriptProjects.html
 
@@ -2534,7 +2643,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'save_project_archive',
-    "Saves the project as a .projectarchive (project.save_archive) with the default additional categories — the standard way to hand a complete project (incl. libraries/devices) to someone else.",
+    "Saves the project as a .projectarchive (project.save_archive) with the default additional categories 鈥?the standard way to hand a complete project (incl. libraries/devices) to someone else.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       archivePath: z.string().describe("Path to write the .projectarchive to."),
@@ -2583,7 +2692,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'export_plcopen_xml',
-    "Exports project objects to a PLCopenXML file (project.export_xml) — the vendor-neutral interchange format. Omit objectPath to export all top-level objects; pass it to export one subtree. Non-exportable objects (device tree etc.) are skipped by the engine.",
+    "Exports project objects to a PLCopenXML file (project.export_xml) 鈥?the vendor-neutral interchange format. Omit objectPath to export all top-level objects; pass it to export one subtree. Non-exportable objects (device tree etc.) are skipped by the engine.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       exportPath: z.string().describe("Path to write the PLCopenXML file to."),
@@ -2639,7 +2748,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'export_native',
-    "Exports project objects in the CODESYS NATIVE export format (project.export_native) — lossless for CODESYS-to-CODESYS transfer (unlike PLCopenXML). Omit objectPath to export all top-level objects.",
+    "Exports project objects in the CODESYS NATIVE export format (project.export_native) 鈥?lossless for CODESYS-to-CODESYS transfer (unlike PLCopenXML). Omit objectPath to export all top-level objects.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       destination: z.string().describe("Destination export file path."),
@@ -2713,7 +2822,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'set_project_info',
-    "Sets fields on the Project Information object (company/title/version/author/description) and saves the project. Only provided fields are changed. NOTE: prefer bump_project_version for version bumps — it also maintains the _MCP_PROJECT_VERSION GVL.",
+    "Sets fields on the Project Information object (company/title/version/author/description) and saves the project. Only provided fields are changed. NOTE: prefer bump_project_version for version bumps 鈥?it also maintains the _MCP_PROJECT_VERSION GVL.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       company: z.string().optional().describe("Company field."),
@@ -2769,7 +2878,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'set_compiler_version_to_newest',
-    "Sets the project's compiler version to the newest available on this CODESYS install (project.set_compilerversion_to_newest, scripting API 4.2.0.0+) and saves. Changes code generation — recompile and retest afterwards.",
+    "Sets the project's compiler version to the newest available on this CODESYS install (project.set_compilerversion_to_newest, scripting API 4.2.0.0+) and saves. Changes code generation 鈥?recompile and retest afterwards.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
     },
@@ -2803,7 +2912,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Application Build & Object Tools (SP21 coverage phase 3) ────────
+  // 鈹€鈹€鈹€ Application Build & Object Tools (SP21 coverage phase 3) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // API: SP21 ScriptApplication.pyi / ScriptObject.pyi.
 
   s.tool(
@@ -2827,7 +2936,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'check_online_change',
-    "Checks whether an ONLINE CHANGE is currently possible for the active application (app.is_online_change_possible) — i.e. whether download_to_device would do an online change instead of a full download. Read-only.",
+    "Checks whether an ONLINE CHANGE is currently possible for the active application (app.is_online_change_possible) 鈥?i.e. whether download_to_device would do an online change instead of a full download. Read-only.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
     },
@@ -2881,7 +2990,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'get_signature_crc',
-    "Reads the signature CRC of a POU (obj.get_signature_crc) — changes when the POU's public interface changes, useful for API-compatibility checks. Requires a successful build first (compile_project). Read-only.",
+    "Reads the signature CRC of a POU (obj.get_signature_crc) 鈥?changes when the POU's public interface changes, useful for API-compatibility checks. Requires a successful build first (compile_project). Read-only.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       objectPath: z.string().describe("Path of the POU (e.g. 'Application/MyFB')."),
@@ -2932,7 +3041,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Device Config & Task Config Tools (SP21 coverage phase 4) ───────
+  // 鈹€鈹€鈹€ Device Config & Task Config Tools (SP21 coverage phase 4) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // API: SP21 ScriptDeviceObject.pyi / ScriptDeviceParameters.pyi /
   // ScriptTaskConfigObject.pyi.
 
@@ -3037,7 +3146,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'export_io_mappings_csv',
-    "Exports a device's IO variable mappings to a CSV file (device.export_io_mappings_as_csv) — the standard way to review/edit IO mapping in bulk. Read-only on the project.",
+    "Exports a device's IO variable mappings to a CSV file (device.export_io_mappings_as_csv) 鈥?the standard way to review/edit IO mapping in bulk. Read-only on the project.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       csvPath: z.string().describe("Absolute path to write the CSV to."),
@@ -3193,13 +3302,13 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Project Users & Misc Object Tools (SP21 coverage phase 5) ───────
+  // 鈹€鈹€鈹€ Project Users & Misc Object Tools (SP21 coverage phase 5) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // API: SP21 ScriptUserManagement.pyi / ScriptTextListObject.pyi /
   // ScriptImagePoolObject.pyi / ScriptExternalFileObject.pyi.
 
   s.tool(
     'list_project_users',
-    "Lists the PROJECT user management's users and groups (project.user_management — access protection on the project file, distinct from device users). Read-only.",
+    "Lists the PROJECT user management's users and groups (project.user_management 鈥?access protection on the project file, distinct from device users). Read-only.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
     },
@@ -3222,7 +3331,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'add_project_user',
-    "Creates a user in the PROJECT user management (project access protection, not device users — for those use add_device_user). Optionally sets full name and password. Saves the project.",
+    "Creates a user in the PROJECT user management (project access protection, not device users 鈥?for those use add_device_user). Optionally sets full name and password. Saves the project.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       userName: z.string().describe("Name for the new user (unique)."),
@@ -3252,7 +3361,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'remove_project_user',
-    "Removes a user from the PROJECT user management and saves. DESTRUCTIVE for that user's access — confirm with the user first if you did not just create it.",
+    "Removes a user from the PROJECT user management and saves. DESTRUCTIVE for that user's access 鈥?confirm with the user first if you did not just create it.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       userName: z.string().describe("Name (or id) of the user to remove."),
@@ -3302,7 +3411,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
 
   s.tool(
     'import_text_list_file',
-    "Imports entries into an existing text list from a text-list export file (textlist.importfile — same format as the IDE's import/export dialog) and saves.",
+    "Imports entries into an existing text list from a text-list export file (textlist.importfile 鈥?same format as the IDE's import/export dialog) and saves.",
     {
       projectFilePath: z.string().describe("Path to the project file."),
       textListPath: z.string().describe("Tree path of the text list object."),
@@ -3657,7 +3766,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Library Management Tools ─────────────────────────────────────────
+  // 鈹€鈹€鈹€ Library Management Tools 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   s.tool(
     'list_project_libraries',
@@ -3753,7 +3862,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         // owns which libraries.
         const sections: string[] = [];
         for (const c of parsed.containers) {
-          const header = `${c.container_name} (libman: ${c.libman_name}) — ${c.references.length} reference(s)`;
+          const header = `${c.container_name} (libman: ${c.libman_name}) 鈥?${c.references.length} reference(s)`;
           const lines = c.references.map((ref) => {
             const flags: string[] = [];
             if (ref.system_library) flags.push('system');
@@ -3798,7 +3907,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         }
 
         const summary =
-          `Project: ${parsed.project ?? '?'} — ${parsed.total_references} library reference(s) across ${parsed.containers.length} container(s).`;
+          `Project: ${parsed.project ?? '?'} 鈥?${parsed.total_references} library reference(s) across ${parsed.containers.length} container(s).`;
         const blocks: string[] = [summary];
         if (headerLines.length > 0) blocks.push(headerLines.join('\n'));
         blocks.push(sections.join('\n\n'));
@@ -3886,7 +3995,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Symbol Configuration Tools ───────────────────────────────────────
+  // 鈹€鈹€鈹€ Symbol Configuration Tools 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   //
   // Wraps ScriptSymbolConfigObject (since CODESYS 3.5.10.0). The Symbol
   // Configuration object controls which IEC variables / FBs / methods are
@@ -4225,7 +4334,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Project metadata ────────────────────────────────────────────────
+  // 鈹€鈹€鈹€ Project metadata 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   s.tool(
     'bump_project_version',
@@ -4560,12 +4669,18 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
         );
         const pouRes = await executor.executeScript(pouScript);
         const parsed = parseAllPouCodeOutput(pouRes.output);
-        if (parsed.ok) {
+        if (parsed.ok && parsed.payload.kind === 'entries') {
           const projName = path.basename(escaped, '.project');
-          fs.writeFileSync(path.join(projectDir, 'pou-dump.md'), renderPouDumpMd(parsed.entries, projName), 'utf-8');
-          log.push(`pou-dump.md: ${parsed.entries.length} POUs`);
+          fs.writeFileSync(path.join(projectDir, 'pou-dump.md'), renderPouDumpMd(parsed.payload.entries, projName), 'utf-8');
+          log.push(`pou-dump.md: ${parsed.payload.entries.length} POUs`);
+        } else if (parsed.ok) {
+          log.push('pou-dump.md: skipped (PLCopenXML export payload returned; markdown dump still expects parsed entries)');
         } else {
-          log.push(`pou-dump.md: skipped (${parsed.reason === 'missing_markers' ? 'markers not found in output' : 'JSON parse failed'})`);
+          log.push(`pou-dump.md: skipped (${parsed.reason === 'missing_markers'
+            ? 'markers not found in output'
+            : parsed.reason === 'path_decode_failed'
+              ? 'export path decode failed'
+              : 'JSON parse failed'})`);
         }
       } catch (e) {
         log.push(`pou-dump.md: skipped (${e instanceof Error ? e.message : String(e)})`);
@@ -4749,7 +4864,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Filesystem mirror (Phase 1: read-only export) ────────────────────
+  // 鈹€鈹€鈹€ Filesystem mirror (Phase 1: read-only export) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   s.tool(
     'mirror_export',
@@ -4779,7 +4894,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── Resources ───────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€ Resources 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   server.resource(
     'project-status',
@@ -4927,28 +5042,27 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     }
   );
 
-  // ─── CODESYS IDE bridge passthrough (opt-in via --ide-bridge) ───────
+  // 鈹€鈹€鈹€ CODESYS IDE bridge passthrough (opt-in via --ide-bridge) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // When the CODESYS-shipped bridge plugin is loaded inside the running IDE
   // (SP22+), it exposes a named pipe at \\.\pipe\codesys-mcp-bridge with its
   // own MCP server. We attach to that pipe, fetch its tools/list, and
   // re-register each tool under an `ide_` prefix. The bridge's authoring
   // tools mutate the live project graph and the editor view picks the change
   // up immediately, which our IronPython watcher can't do.
-  // Tracked so the shutdown handler can reap the bridge shim it spawned —
-  // otherwise CodesysMCPBridge.exe orphans every time the orchestrator exits.
+  // Tracked so the shutdown handler can reap the bridge shim it spawned 鈥?  // otherwise CodesysMCPBridge.exe orphans every time the orchestrator exits.
   let ideBridgeClient: IdeBridgeClient | null = null;
   if (config.ideBridge !== 'off') {
     ideBridgeClient = await registerIdeBridgeTools(s, config.ideBridge, config.codesysPath);
   }
 
-  // ─── Connect ─────────────────────────────────────────────────────────
+  // 鈹€鈹€鈹€ Connect 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   const transport = new StdioServerTransport();
   serverLog.info('Connecting MCP server via stdio...');
   server.connect(transport);
   serverLog.info('MCP Server connected and listening.');
 
-  // ─── Live values pump (opt-in) ───────────────────────────────────────
+  // 鈹€鈹€鈹€ Live values pump (opt-in) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   let liveValuesPump: LiveValuesPump | null = null;
   if (config.liveValues) {
@@ -5017,7 +5131,7 @@ export async function startMcpServer(config: ServerConfig): Promise<void> {
     serverLog.info(`Live-values pump started (${config.liveValuesIntervalMs ?? 500}ms)`);
   }
 
-  // ─── Graceful Shutdown ───────────────────────────────────────────────
+  // 鈹€鈹€鈹€ Graceful Shutdown 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   const shutdown = async () => {
     serverLog.info('Shutdown signal received');
@@ -5087,7 +5201,7 @@ async function registerIdeBridgeTools(
     if (mode === 'on') {
       throw new Error(
         `--ide-bridge=on but no CodesysMCPBridge.exe found next to ${codesysPath} ` +
-          '(this CODESYS install does not ship the bridge — SP22.10+ required).'
+          '(this CODESYS install does not ship the bridge 鈥?SP22.10+ required).'
       );
     }
     serverLog.info('IDE bridge shim not present on this CODESYS install; skipping (auto).');
